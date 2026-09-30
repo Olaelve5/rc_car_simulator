@@ -1,0 +1,20 @@
+# Core Perception & Computer Vision
+opencv-contrib-python>=4.8.0
+
+# Numerical & Scientific Computing
+numpy>=1.24.0,<2.0.0
+scipy>=1.10.0
+matplotlib>=3.7.0
+
+# Reinforcement Learning & Simulation
+gymnasium>=0.29.0
+torch>=2.0.0
+stable-baselines3>=2.2.0
+
+# Human-Machine Interface & Input
+pygame>=2.5.0
+
+# Code Quality & Development Tooling
+black>=24.1.0
+flake8>=7.0.0
+mypy>=1.8.0
