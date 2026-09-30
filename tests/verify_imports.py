@@ -71,7 +71,8 @@ def test_third_party_imports() -> bool:
     try:
         import pygame
 
-        print(f"[OK] pygame: {pygame.__version__}")
+        pg_version = getattr(pygame, "__version__", pygame.version.ver)
+        print(f"[OK] pygame: {pg_version}")
     except Exception as exc:
         print(f"[FAIL] pygame import failed: {exc}")
         all_passed = False

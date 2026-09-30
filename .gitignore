@@ -51,7 +51,6 @@ coverage.xml
 .mypy_cache/
 .dmypy.json
 dmypy.json
-.flake8
 
 # IDE & Editor files
 .vscode/

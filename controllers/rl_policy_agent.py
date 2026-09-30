@@ -55,7 +55,7 @@ class RLPolicyAgent(BaseController):
         Returns:
             Action vector [steering, throttle] in normalized range [-1.0, 1.0].
         """
-        pass
+        raise NotImplementedError
 
     def reset(self) -> None:
         """Resets recurrent states (if using recurrent policies like RecurrentPPO)."""
