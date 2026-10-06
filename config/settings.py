@@ -51,9 +51,9 @@ class ArenaConfig:
     arena_width_m: float = 2.0  # Physical width in meters
     arena_height_m: float = 1.5  # Physical height in meters
     aruco_dict_name: str = "DICT_4X4_50"
-    vehicle_marker_id: int = 0
+    vehicle_marker_id: int = 4
     vehicle_marker_size_m: float = 0.05
-    corner_marker_ids: Tuple[int, int, int, int] = (10, 11, 12, 13)
+    corner_marker_ids: Tuple[int, int, int, int] = (0, 1, 2, 3)
 
 
 @dataclass

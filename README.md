@@ -118,6 +118,18 @@ python tests/verify_camera.py
 
 *Note: On macOS, ensure your terminal emulator (e.g., Terminal, iTerm2, VS Code) has permission to access the camera under `System Settings -> Privacy & Security -> Camera`.*
 
+### Test 3: Live Vehicle Tracking (Homography)
+Detects the four corner markers (IDs `0, 1, 2, 3`), computes the pixel -> arena homography, and continuously prints the car marker (ID `4`) pose in meters:
+
+```bash
+source .venv/bin/activate
+python -m vision.track_vehicle                    # camera from config
+python -m vision.track_vehicle --source run.mp4   # recorded video
+python -m vision.track_vehicle --width 1.8 --height 1.2 --no-display
+```
+
+Corner marker centers map to `0 -> (0, 0)`, `1 -> (W, 0)`, `2 -> (W, H)`, `3 -> (0, H)`; place them counter-clockwise seen from above. `W`/`H` are the measured distances between marker centers. Mount the car marker with its top edge facing the front of the car (yaw = 0 along +X). In the preview, press `l` to lock the homography and `q` to quit.
+
 ---
 
 ## 5. Configuration & Safety Parameters
