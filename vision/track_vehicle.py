@@ -46,12 +46,14 @@ class ArenaTracker:
         corner_ids: Tuple[int, int, int, int],
         vehicle_marker_id: int,
         dictionary: Union[int, str],
+        flip_camera: bool = True,
     ) -> None:
         self.corner_ids = corner_ids
         self.transformer = HomographyTransformer(arena_width_m, arena_height_m)
         self.marker_tracker = MarkerTracker(
             dictionary_id=dictionary, vehicle_marker_id=vehicle_marker_id
         )
+        self.flip_camera = flip_camera
         self.locked = False
         self.visible_corners: Tuple[int, ...] = ()
 
@@ -101,6 +103,8 @@ def iter_poses(
         ok, frame = cap.read()
         if not ok:
             return
+        if tracker.flip_camera:
+            frame = cv2.rotate(frame, cv2.ROTATE_180)
         pose, detections = tracker.update(frame, time.monotonic())
         yield frame, pose, detections
 
@@ -170,6 +174,11 @@ def main() -> None:
     parser.add_argument(
         "--no-display", action="store_true", help="Disable OpenCV preview windows."
     )
+    parser.add_argument(
+        "--no-flip",
+        action="store_true",
+        help="Disable 180-degree camera rotation (flip is on by default).",
+    )
     args = parser.parse_args()
 
     tracker = ArenaTracker(
@@ -178,6 +187,7 @@ def main() -> None:
         corner_ids=arena.corner_marker_ids,
         vehicle_marker_id=arena.vehicle_marker_id,
         dictionary=arena.aruco_dict_name,
+        flip_camera=not args.no_flip,
     )
     cap = open_source(args.source)
     print_period = 1.0 / args.print_hz if args.print_hz > 0 else 0.0

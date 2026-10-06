@@ -22,11 +22,13 @@ class CameraStream:
         camera_id: int = 0,
         resolution: Tuple[int, int] = (1280, 720),
         fps: int = 30,
+        flip_video: bool = True,
     ) -> None:
         """Initializes camera parameters without immediately acquiring the device."""
         self.camera_id = camera_id
         self.resolution = resolution
         self.fps = fps
+        self.flip_video = flip_video
         self._cap: Optional[cv2.VideoCapture] = None
         self._thread: Optional[threading.Thread] = None
         self._running: bool = False

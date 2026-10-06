@@ -1,6 +1,9 @@
 import time
 import cv2
 
+# Configuration
+flip_video = True
+
 # Initialize camera
 cap = cv2.VideoCapture(0)
 
@@ -29,6 +32,7 @@ cap.set(cv2.CAP_PROP_WB_TEMPERATURE, 4600)
 # Check if the camera hardware accepted the settings
 print(f"Auto WB status: {cap.get(cv2.CAP_PROP_AUTO_WB)}")
 print(f"Color Temp: {cap.get(cv2.CAP_PROP_WB_TEMPERATURE)}")
+print(f"Video flip enabled: {flip_video}")
 
 print("Streaming active. Press 'q' in the window to quit.")
 
@@ -38,8 +42,9 @@ while True:
         print("Error: Failed to grab frame.")
         break
 
-    # Rotate 180 degrees
-    frame = cv2.rotate(frame, cv2.ROTATE_180)
+    # Rotate 180 degrees if enabled
+    if flip_video:
+        frame = cv2.rotate(frame, cv2.ROTATE_180)
 
     # Display feed
     cv2.imshow("Overhead Camera Feed", frame)

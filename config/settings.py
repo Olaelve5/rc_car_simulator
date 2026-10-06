@@ -20,6 +20,7 @@ class CameraConfig:
     fourcc: str = "MJPG"
     auto_exposure: bool = False
     exposure_value: float = -4.0
+    flip_video: bool = True  # Rotate frame 180 deg for overhead camera orientation
 
 
 @dataclass
