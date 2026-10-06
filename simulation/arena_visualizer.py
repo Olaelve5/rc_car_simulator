@@ -7,7 +7,6 @@ from pathlib import Path
 import sys
 from typing import List, Optional, Tuple
 import warnings
-import cv2
 import numpy as np
 import pygame
 
@@ -116,9 +115,6 @@ class ArenaVisualizer:
         self.max_trail_len: int = 300
         self.status_text: str = ""
         self._last_vehicle_pose: Optional[Tuple[float, float, float]] = None
-        self.show_camera_pip: bool = False
-        self.pip_size: Tuple[int, int] = (240, 135)
-        self._keys_pressed: List[int] = []
 
         self.is_open: bool = True
         self._screen: Optional[pygame.Surface] = None
@@ -166,7 +162,7 @@ class ArenaVisualizer:
 
     @property
     def fps(self) -> float:
-        """Returns the current measured display refresh rate in frames per second."""
+        """Returns current display refresh rate in frames per second."""
         return self._clock.get_fps() if self._clock is not None else 0.0
 
     def world_to_pixel(self, x: float, y: float) -> Tuple[int, int]:
@@ -212,12 +208,11 @@ class ArenaVisualizer:
         return float(x), float(y)
 
     def handle_events(self) -> bool:
-        """Processes OS and Pygame window events (window close, keyboard shortcuts).
+        """Processes OS and Pygame window events (e.g. window close, ESC/Q keys).
 
         Returns:
             True if visualizer should continue running, False if exit requested.
         """
-        self._keys_pressed.clear()
         if self.render_mode != "human":
             return self.is_open
 
@@ -226,20 +221,11 @@ class ArenaVisualizer:
                 self.is_open = False
                 return False
             elif event.type == pygame.KEYDOWN:
-                self._keys_pressed.append(event.key)
                 if event.key in (pygame.K_ESCAPE, pygame.K_q):
                     self.is_open = False
                     return False
-                elif event.key == pygame.K_c:
-                    self.clear_trail()
-                elif event.key == pygame.K_v:
-                    self.show_camera_pip = not self.show_camera_pip
 
         return self.is_open
-
-    def was_key_pressed(self, key: int) -> bool:
-        """Checks if a given key code was pressed in the most recent event cycle."""
-        return key in self._keys_pressed
 
     def _draw_top_header(self, surface: pygame.Surface) -> None:
         """Draws top information header bar with title and metadata chips."""
@@ -558,43 +544,11 @@ class ArenaVisualizer:
         pygame.draw.line(surface, self.COLOR_HEADING_LINE, p_front, p_end, width=2)
         pygame.draw.circle(surface, self.COLOR_HEADING_LINE, p_end, 3)
 
-    def _draw_camera_pip(
-        self, surface: pygame.Surface, frame_bgr: np.ndarray
-    ) -> None:
-        """Renders an inset Picture-in-Picture thumbnail of the camera feed."""
-        pw, ph = self.pip_size
-        px = self.window_width - pw - 15
-        py = self.window_height - ph - 15
-
-        # Resize and convert BGR -> RGB
-        thumb_bgr = cv2.resize(frame_bgr, (pw, ph), interpolation=cv2.INTER_LINEAR)
-        thumb_rgb = cv2.cvtColor(thumb_bgr, cv2.COLOR_BGR2RGB)
-        pip_surf = pygame.image.frombuffer(thumb_rgb.tobytes(), (pw, ph), "RGB")
-
-        # Container styling: background and border
-        pygame.draw.rect(
-            surface, (15, 23, 42), (px - 2, py - 2, pw + 4, ph + 4), border_radius=4
-        )
-        surface.blit(pip_surf, (px, py))
-        pygame.draw.rect(
-            surface,
-            (148, 163, 184),
-            (px - 2, py - 2, pw + 4, ph + 4),
-            width=1,
-            border_radius=4,
-        )
-
-        # Small badge in top-left of PIP
-        if self._font_small:
-            badge = self._font_small.render("CAM [v]", True, (241, 245, 249))
-            surface.blit(badge, (px + 6, py + 4))
-
     def render(
         self,
         vehicle_pose: Optional[Tuple[float, float, float]] = None,
         steering_angle: float = 0.0,
         status_text: Optional[str] = None,
-        camera_overlay: Optional[np.ndarray] = None,
     ) -> Optional[np.ndarray]:
         """Renders arena canvas, grid, boundaries, markers, trail, and vehicle.
 
@@ -603,7 +557,6 @@ class ArenaVisualizer:
                           Defaults to last known pose or center of the arena.
             steering_angle: Front wheel steer angle in radians.
             status_text: Optional telemetry / state string displayed in header.
-            camera_overlay: Optional live camera frame with CV overlay for PiP.
 
         Returns:
             RGB numpy array of shape (H, W, 3) if render_mode is 'rgb_array',
@@ -655,10 +608,6 @@ class ArenaVisualizer:
             yaw=vyaw,
             steering_angle=steering_angle,
         )
-
-        # Draw Picture-in-Picture camera feed if enabled
-        if self.show_camera_pip and camera_overlay is not None:
-            self._draw_camera_pip(self._screen, camera_overlay)
 
         if self.render_mode == "human":
             pygame.display.flip()

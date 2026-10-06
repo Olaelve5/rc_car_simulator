@@ -1,16 +1,13 @@
 """Integration test: Connects live ArUco marker tracking to 2D ArenaVisualizer.
 
-Streams camera frames via threaded acquisition, resolves 4-point arena homography
-calibration and car pose, and renders live vehicle position, heading, and motion
-trail in the Pygame arena at a decoupled, smooth 60 FPS.
+Streams camera frames, resolves 4-point arena homography calibration and car pose,
+and renders the live vehicle position, heading, and motion trail in the Pygame arena.
 
 Usage:
     python tests/test_tracking_visualizer.py             # Uses default camera
-    python tests/test_tracking_visualizer.py --no-camera # Pure Pygame (zero Cocoa lag)
-    python tests/test_tracking_visualizer.py --res 640x480 # Higher FPS format
+    python tests/test_tracking_visualizer.py --no-camera # Hide OpenCV window
     python tests/test_tracking_visualizer.py --mock      # Simulated demo without camera
     python tests/test_tracking_visualizer.py --no-flip   # Disable 180deg camera flip
-    python tests/test_tracking_visualizer.py --profile   # Microsecond stage diagnostics
 """
 
 from __future__ import annotations
@@ -20,10 +17,8 @@ import math
 from pathlib import Path
 import sys
 import time
-from typing import Optional, Tuple
 import warnings
 import cv2
-import pygame
 
 # Suppress benign pkg_resources warning from pygame internals on newer Python
 warnings.filterwarnings("ignore", category=UserWarning, module="pygame.pkgdata")
@@ -36,21 +31,10 @@ if str(project_root) not in sys.path:
 from config.settings import DEFAULT_SETTINGS  # noqa: E402
 from simulation.arena_visualizer import ArenaVisualizer  # noqa: E402
 from vision.camera_stream import CameraStream  # noqa: E402
-from vision.marker_tracker import Detections, VehiclePose  # noqa: E402
-from vision.track_vehicle import ArenaTracker, draw_overlay  # noqa: E402
-
-
-def parse_resolution(res_str: str) -> Tuple[int, int]:
-    """Parses WIDTHxHEIGHT resolution string (e.g. '1280x720' -> (1280, 720))."""
-    try:
-        parts = res_str.lower().split("x")
-        if len(parts) == 2:
-            return int(parts[0]), int(parts[1])
-    except Exception:
-        pass
-    raise argparse.ArgumentTypeError(
-        f"Invalid resolution '{res_str}'. Expected format: WIDTHxHEIGHT (e.g. 1280x720)"
-    )
+from vision.track_vehicle import (  # noqa: E402
+    ArenaTracker,
+    draw_overlay,
+)
 
 
 def run_mock_simulation(visualizer: ArenaVisualizer) -> None:
@@ -76,7 +60,7 @@ def run_mock_simulation(visualizer: ArenaVisualizer) -> None:
 
         status = (
             f"MOCK DEMO | Pos: ({x:.2f}m, {y:.2f}m) | "
-            f"Yaw: {math.degrees(yaw):.1f}° | Vis: {visualizer.fps:.0f} FPS"
+            f"Yaw: {math.degrees(yaw):.1f}°"
         )
         visualizer.render(
             vehicle_pose=(x, y, yaw),
@@ -89,30 +73,22 @@ def run_live_tracking(
     source: str,
     arena_width: float,
     arena_height: float,
-    resolution: Tuple[int, int] = (1280, 720),
-    cam_fps: int = 60,
     show_camera: bool = True,
-    show_pip: bool = True,
     flip_camera: bool = True,
-    profile: bool = False,
 ) -> None:
-    """Runs decoupled live tracking pipeline connected to 2D ArenaVisualizer."""
+    """Runs live ArUco detection pipeline connected to 2D ArenaVisualizer."""
     arena_cfg = DEFAULT_SETTINGS.arena
     print("\n" + "=" * 65)
-    print("AUTONOMOUS TESTBED: DECOUPLED TRACKING + ARENA VISUALIZER")
+    print("AUTONOMOUS TESTBED: LIVE TRACKING + ARENA VISUALIZER")
     print("=" * 65)
     print(f"Source: {source} (Flip 180°: {flip_camera})")
-    print(f"Target Camera Format: {resolution[0]}x{resolution[1]} @ {cam_fps} FPS")
     print(f"Arena Dimensions: {arena_width:.2f}m x {arena_height:.2f}m")
     print(f"Corner Marker IDs: {arena_cfg.corner_marker_ids}")
     print(f"Vehicle Marker ID: {arena_cfg.vehicle_marker_id}")
     print("Controls:")
     print("  'q' / 'ESC' : Quit test")
-    print("  'l'         : Lock / unlock homography calibration")
-    print("  'c'         : Clear motion breadcrumb trail")
-    print("  'v'         : Toggle in-window live camera preview (PiP)")
-    if show_camera:
-        print("Tip: Pass --no-camera to run solely in Pygame for lowest latency.")
+    print("  'l'         : Lock / unlock homography calibration (in camera window)")
+    print("  'c'         : Clear motion breadcrumb trail (in visualizer window)")
     print("=" * 65 + "\n")
 
     # Initialize tracker and visualizer
@@ -128,16 +104,14 @@ def run_live_tracking(
     visualizer = ArenaVisualizer(
         arena_width_m=arena_width,
         arena_height_m=arena_height,
-        render_fps=60,
         render_mode="human",
     )
-    visualizer.show_camera_pip = show_pip
 
-    # Start threaded acquisition to eliminate blocking cap.read()
+    cam_cfg = DEFAULT_SETTINGS.camera
     cam = CameraStream(
         source=source,
-        resolution=resolution,
-        fps=cam_fps,
+        resolution=cam_cfg.resolution,
+        fps=cam_cfg.fps,
         flip_video=flip_camera,
         buffer_size=1,
     )
@@ -145,47 +119,32 @@ def run_live_tracking(
     try:
         cam.start()
     except Exception as exc:
-        print(f"[ERROR] Failed to initialize camera stream: {exc}")
+        print(f"[ERROR] Failed to open camera stream: {exc}")
         visualizer.close()
         return
 
-    last_frame_id = -1
-    last_pose: Optional[VehiclePose] = None
-    last_detections: Detections = ([], None, [])
-    last_overlay: Optional[cv2.typing.MatLike] = None
-
     last_print = -math.inf
-    print_period = 0.5
-
-    # Profiling timers
-    t_detect_sum = 0.0
-    t_detect_count = 0
+    print_period = 0.5  # print every 500ms
+    last_frame_id = -1
+    last_pose = None
+    last_detections = ([], None, [])
 
     try:
         while visualizer.is_open:
-            # 1. Non-blocking retrieval of latest camera frame
+            # Non-blocking retrieval of newest camera frame
             has_new, frame, frame_id = cam.read_latest(last_frame_id)
 
             if has_new and frame is not None:
                 last_frame_id = frame_id
-                t0_detect = time.perf_counter()
-
-                # Process detection & homography on fresh frames
+                # Run detection & pose calculation only on fresh frames
                 last_pose, last_detections = tracker.update(frame, time.monotonic())
 
-                t_detect = time.perf_counter() - t0_detect
-                t_detect_sum += t_detect
-                t_detect_count += 1
-
-                # Generate camera overlay when requested for PiP or OpenCV window
-                if visualizer.show_camera_pip or show_camera:
-                    last_overlay = draw_overlay(
+                # Optional OpenCV camera feed preview (updated on new frames)
+                if show_camera:
+                    camera_overlay = draw_overlay(
                         frame, tracker, last_pose, last_detections
                     )
-
-                # Optional OpenCV Cocoa window (updated only on new camera frames)
-                if show_camera and last_overlay is not None:
-                    cv2.imshow("Overhead Camera Feed (OpenCV)", last_overlay)
+                    cv2.imshow("Overhead Camera Feed (OpenCV)", camera_overlay)
                     key = cv2.waitKey(1) & 0xFF
                     if key in (ord("q"), 27):
                         break
@@ -197,74 +156,55 @@ def run_live_tracking(
                     elif key == ord("c"):
                         visualizer.clear_trail()
 
-            # 2. Check for Pygame window keyboard shortcuts
-            if visualizer.was_key_pressed(pygame.K_l):
-                tracker.locked = not tracker.locked
-                print(f"Homography {'LOCKED' if tracker.locked else 'UNLOCKED'}")
-
-            # 3. Build telemetry string showing BOTH display FPS and camera FPS
+            # Format status text displaying both Visualizer FPS and Camera FPS
             vis_fps = visualizer.fps
-            cam_fps_val = cam.measured_fps
+            cam_fps = cam.measured_fps
             if last_pose is not None:
                 status = (
                     f"TRACKING: ({last_pose.x:.2f}m, {last_pose.y:.2f}m) "
                     f"{math.degrees(last_pose.yaw):.1f}° | "
-                    f"Vis: {vis_fps:.0f} FPS | Cam: {cam_fps_val:.0f} FPS"
+                    f"Vis: {vis_fps:.0f} FPS | Cam: {cam_fps:.0f} FPS"
                 )
-                pose_tuple = (last_pose.x, last_pose.y, last_pose.yaw)
+                visualizer.render(
+                    vehicle_pose=(last_pose.x, last_pose.y, last_pose.yaw),
+                    status_text=status,
+                )
             else:
                 if not tracker.transformer.is_calibrated:
                     corners_seen = len(tracker.visible_corners)
                     status = (
                         f"CALIBRATING: {corners_seen}/4 CORNERS | "
-                        f"Vis: {vis_fps:.0f} FPS | Cam: {cam_fps_val:.0f} FPS"
+                        f"Vis: {vis_fps:.0f} FPS | Cam: {cam_fps:.0f} FPS"
                     )
                 else:
                     status = (
                         f"ARENA CALIBRATED | SEARCHING CAR | "
-                        f"Vis: {vis_fps:.0f} FPS | Cam: {cam_fps_val:.0f} FPS"
+                        f"Vis: {vis_fps:.0f} FPS | Cam: {cam_fps:.0f} FPS"
                     )
-                pose_tuple = None
+                visualizer.render(status_text=status)
 
-            # 4. Render visualizer frame at steady 60 FPS
-            visualizer.render(
-                vehicle_pose=pose_tuple,
-                status_text=status,
-                camera_overlay=last_overlay,
-            )
-
-            # 5. Console heartbeat and performance diagnostics
+            # Console heartbeat
             now = time.monotonic()
             if now - last_print >= print_period:
                 last_print = now
-                if profile and t_detect_count > 0:
-                    avg_det_ms = (t_detect_sum / t_detect_count) * 1000.0
+                if not tracker.transformer.is_calibrated:
                     print(
-                        f"[PROFILE] Detect: {avg_det_ms:4.1f}ms | "
-                        f"Vis: {vis_fps:4.1f} FPS | "
-                        f"Cam: {cam_fps_val:4.1f} FPS"
+                        "Waiting for 4 corners... Visible:",
+                        list(tracker.visible_corners),
+                        f"(Cam: {cam_fps:.1f} FPS)",
                     )
-                    t_detect_sum = 0.0
-                    t_detect_count = 0
+                elif last_pose is None:
+                    print(
+                        "Arena calibrated. Waiting for vehicle marker... "
+                        f"(Cam: {cam_fps:.1f} FPS)"
+                    )
                 else:
-                    if not tracker.transformer.is_calibrated:
-                        print(
-                            "Waiting for 4 corners... Visible:",
-                            list(tracker.visible_corners),
-                            f"(Cam: {cam_fps_val:.1f} FPS)",
-                        )
-                    elif last_pose is None:
-                        print(
-                            "Arena calibrated. Waiting for vehicle marker... "
-                            f"(Cam: {cam_fps_val:.1f} FPS)"
-                        )
-                    else:
-                        print(
-                            f"[LOCKED] Vehicle: x={last_pose.x:6.3f}m, "
-                            f"y={last_pose.y:6.3f}m, "
-                            f"yaw={math.degrees(last_pose.yaw):6.1f}° | "
-                            f"Vis: {vis_fps:.0f} FPS | Cam: {cam_fps_val:.0f} FPS"
-                        )
+                    print(
+                        f"[LOCKED] Vehicle: x={last_pose.x:6.3f}m, "
+                        f"y={last_pose.y:6.3f}m, "
+                        f"yaw={math.degrees(last_pose.yaw):6.1f}° | "
+                        f"Vis: {vis_fps:.0f} FPS | Cam: {cam_fps:.0f} FPS"
+                    )
 
     except KeyboardInterrupt:
         print("\nInterrupted by user.")
@@ -281,7 +221,7 @@ def main() -> None:
     cam = DEFAULT_SETTINGS.camera
 
     parser = argparse.ArgumentParser(
-        description="High-framerate ArUco tracking integrated with 2D Arena Visualizer."
+        description="Live ArUco tracking integrated with 2D Arena Visualizer."
     )
     parser.add_argument(
         "--source",
@@ -291,6 +231,7 @@ def main() -> None:
             f"(default: {cam.camera_id})."
         ),
     )
+
     parser.add_argument(
         "--width",
         type=float,
@@ -304,42 +245,14 @@ def main() -> None:
         help=f"Arena height in meters (default: {arena.arena_height_m}).",
     )
     parser.add_argument(
-        "--res",
-        type=parse_resolution,
-        default=cam.resolution,
-        help=(
-            f"Capture resolution (e.g. 1280x720, 640x480). "
-            f"Default: {cam.resolution[0]}x{cam.resolution[1]}."
-        ),
-    )
-    parser.add_argument(
-        "--cam-fps",
-        type=int,
-        default=cam.fps,
-        help=f"Target camera capture FPS requested from driver (default: {cam.fps}).",
-    )
-    parser.add_argument(
         "--no-camera",
         action="store_true",
-        help="Hide separate OpenCV window (render solely in Pygame for maximum FPS).",
-    )
-    parser.add_argument(
-        "--no-pip",
-        action="store_true",
-        help=(
-            "Disable default Picture-in-Picture camera inset inside Pygame "
-            "(toggleable with 'v')."
-        ),
+        help="Hide OpenCV camera preview window (only display Pygame visualizer).",
     )
     parser.add_argument(
         "--no-flip",
         action="store_true",
         help="Disable 180-degree camera rotation (flip is on by default).",
-    )
-    parser.add_argument(
-        "--profile",
-        action="store_true",
-        help="Enable live performance profiling and stage latency readouts.",
     )
     parser.add_argument(
         "--mock",
@@ -360,12 +273,8 @@ def main() -> None:
             source=args.source,
             arena_width=args.width,
             arena_height=args.height,
-            resolution=args.res,
-            cam_fps=args.cam_fps,
             show_camera=not args.no_camera,
-            show_pip=not args.no_pip,
             flip_camera=not args.no_flip,
-            profile=args.profile,
         )
 
 
