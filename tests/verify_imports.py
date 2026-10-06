@@ -108,6 +108,7 @@ def test_local_module_imports() -> bool:
         ("comms.esp32_client", "ESP32Client"),
         ("simulation.bicycle_model", "KinematicBicycleModel"),
         ("simulation.arena_env", "ArenaEnv"),
+        ("simulation.arena_visualizer", "ArenaVisualizer"),
         ("simulation.track_generator", "TrackGenerator"),
         ("controllers.base_controller", "BaseController"),
         ("controllers.pid_controller", "PIDController"),
