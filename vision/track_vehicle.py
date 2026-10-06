@@ -85,9 +85,12 @@ def open_source(source: str) -> cv2.VideoCapture:
         cap = cv2.VideoCapture(int(source), cv2.CAP_AVFOUNDATION)
         if not cap.isOpened():
             cap = cv2.VideoCapture(int(source))
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, cam.resolution[0])
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, cam.resolution[1])
         cap.set(cv2.CAP_PROP_FPS, cam.fps)
+        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0)
+        cap.set(cv2.CAP_PROP_EXPOSURE, cam.exposure_value)
     else:
         cap = cv2.VideoCapture(source)
     if not cap.isOpened():

@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 from typing import List, Optional, Tuple
 import warnings
+import cv2
 import numpy as np
 import pygame
 
@@ -111,6 +112,14 @@ class ArenaVisualizer:
         self.arena_rect_left = self.margin_px
         self.arena_rect_top = self.margin_px + self.top_bar_height_px
 
+        self.trail: List[Tuple[int, int]] = []
+        self.max_trail_len: int = 300
+        self.status_text: str = ""
+        self._last_vehicle_pose: Optional[Tuple[float, float, float]] = None
+        self.show_camera_pip: bool = False
+        self.pip_size: Tuple[int, int] = (240, 135)
+        self._keys_pressed: List[int] = []
+
         self.is_open: bool = True
         self._screen: Optional[pygame.Surface] = None
         self._clock: Optional[pygame.time.Clock] = None
@@ -155,6 +164,11 @@ class ArenaVisualizer:
             self._font_small = pygame.font.Font(None, 14)
             self._font_medium = pygame.font.Font(None, 18)
 
+    @property
+    def fps(self) -> float:
+        """Returns the current measured display refresh rate in frames per second."""
+        return self._clock.get_fps() if self._clock is not None else 0.0
+
     def world_to_pixel(self, x: float, y: float) -> Tuple[int, int]:
         """Converts metric arena world coordinates (meters) to screen pixel coordinates.
 
@@ -198,11 +212,12 @@ class ArenaVisualizer:
         return float(x), float(y)
 
     def handle_events(self) -> bool:
-        """Processes OS and Pygame window events (e.g. window close, ESC/Q keys).
+        """Processes OS and Pygame window events (window close, keyboard shortcuts).
 
         Returns:
             True if visualizer should continue running, False if exit requested.
         """
+        self._keys_pressed.clear()
         if self.render_mode != "human":
             return self.is_open
 
@@ -211,11 +226,20 @@ class ArenaVisualizer:
                 self.is_open = False
                 return False
             elif event.type == pygame.KEYDOWN:
+                self._keys_pressed.append(event.key)
                 if event.key in (pygame.K_ESCAPE, pygame.K_q):
                     self.is_open = False
                     return False
+                elif event.key == pygame.K_c:
+                    self.clear_trail()
+                elif event.key == pygame.K_v:
+                    self.show_camera_pip = not self.show_camera_pip
 
         return self.is_open
+
+    def was_key_pressed(self, key: int) -> bool:
+        """Checks if a given key code was pressed in the most recent event cycle."""
+        return key in self._keys_pressed
 
     def _draw_top_header(self, surface: pygame.Surface) -> None:
         """Draws top information header bar with title and metadata chips."""
@@ -238,17 +262,34 @@ class ArenaVisualizer:
             surface.blit(title_surf, (15, 12))
 
         if self._font_small:
-            fps_val = self._clock.get_fps() if self._clock else 0.0
-            meta_str = (
-                f"Arena: {self.arena_width_m:.2f}m x {self.arena_height_m:.2f}m | "
-                f"Scale: {int(self.pixels_per_meter)}px/m | "
-                f"Target FPS: {self.render_fps} ({fps_val:.1f} live)"
-            )
+            fps_val = self.fps
+            if self.status_text:
+                if "FPS" in self.status_text:
+                    meta_str = self.status_text
+                else:
+                    meta_str = f"[{self.status_text}] | FPS: {fps_val:.1f}"
+            else:
+                meta_str = (
+                    f"Arena: {self.arena_width_m:.2f}m x {self.arena_height_m:.2f}m | "
+                    f"Scale: {int(self.pixels_per_meter)}px/m | "
+                    f"Target FPS: {self.render_fps} ({fps_val:.1f} live)"
+                )
             meta_surf = self._font_small.render(meta_str, True, self.COLOR_TEXT)
             meta_rect = meta_surf.get_rect()
             meta_rect.right = self.window_width - 15
             meta_rect.centery = self.top_bar_height_px // 2
             surface.blit(meta_surf, meta_rect)
+
+    def clear_trail(self) -> None:
+        """Clears the breadcrumb trajectory history."""
+        self.trail.clear()
+
+    def _draw_trail(self, surface: pygame.Surface) -> None:
+        """Renders historical vehicle trajectory breadcrumb path."""
+        if len(self.trail) >= 2:
+            pygame.draw.lines(
+                surface, self.COLOR_HEADING_LINE, False, self.trail, width=2
+            )
 
     def _draw_arena_grid(self, surface: pygame.Surface) -> None:
         """Draws arena floor surface, minor/major metric grid lines, and axis labels."""
@@ -517,17 +558,52 @@ class ArenaVisualizer:
         pygame.draw.line(surface, self.COLOR_HEADING_LINE, p_front, p_end, width=2)
         pygame.draw.circle(surface, self.COLOR_HEADING_LINE, p_end, 3)
 
+    def _draw_camera_pip(
+        self, surface: pygame.Surface, frame_bgr: np.ndarray
+    ) -> None:
+        """Renders an inset Picture-in-Picture thumbnail of the camera feed."""
+        pw, ph = self.pip_size
+        px = self.window_width - pw - 15
+        py = self.window_height - ph - 15
+
+        # Resize and convert BGR -> RGB
+        thumb_bgr = cv2.resize(frame_bgr, (pw, ph), interpolation=cv2.INTER_LINEAR)
+        thumb_rgb = cv2.cvtColor(thumb_bgr, cv2.COLOR_BGR2RGB)
+        pip_surf = pygame.image.frombuffer(thumb_rgb.tobytes(), (pw, ph), "RGB")
+
+        # Container styling: background and border
+        pygame.draw.rect(
+            surface, (15, 23, 42), (px - 2, py - 2, pw + 4, ph + 4), border_radius=4
+        )
+        surface.blit(pip_surf, (px, py))
+        pygame.draw.rect(
+            surface,
+            (148, 163, 184),
+            (px - 2, py - 2, pw + 4, ph + 4),
+            width=1,
+            border_radius=4,
+        )
+
+        # Small badge in top-left of PIP
+        if self._font_small:
+            badge = self._font_small.render("CAM [v]", True, (241, 245, 249))
+            surface.blit(badge, (px + 6, py + 4))
+
     def render(
         self,
         vehicle_pose: Optional[Tuple[float, float, float]] = None,
         steering_angle: float = 0.0,
+        status_text: Optional[str] = None,
+        camera_overlay: Optional[np.ndarray] = None,
     ) -> Optional[np.ndarray]:
-        """Renders arena canvas, grid, boundaries, markers, and vehicle.
+        """Renders arena canvas, grid, boundaries, markers, trail, and vehicle.
 
         Args:
             vehicle_pose: Optional (x, y, yaw) in meters and radians.
-                          Defaults to center of the arena if None.
+                          Defaults to last known pose or center of the arena.
             steering_angle: Front wheel steer angle in radians.
+            status_text: Optional telemetry / state string displayed in header.
+            camera_overlay: Optional live camera frame with CV overlay for PiP.
 
         Returns:
             RGB numpy array of shape (H, W, 3) if render_mode is 'rgb_array',
@@ -540,6 +616,27 @@ class ArenaVisualizer:
         if not self.handle_events():
             return None
 
+        if status_text is not None:
+            self.status_text = status_text
+
+        # Update vehicle pose and motion trail
+        if vehicle_pose is not None:
+            self._last_vehicle_pose = vehicle_pose
+            vx, vy, vyaw = vehicle_pose
+            px, py = self.world_to_pixel(vx, vy)
+            if not self.trail or (
+                abs(px - self.trail[-1][0]) + abs(py - self.trail[-1][1]) >= 2
+            ):
+                self.trail.append((px, py))
+                if len(self.trail) > self.max_trail_len:
+                    self.trail.pop(0)
+        elif self._last_vehicle_pose is not None:
+            vx, vy, vyaw = self._last_vehicle_pose
+        else:
+            vx = self.arena_width_m / 2.0
+            vy = self.arena_height_m / 2.0
+            vyaw = 0.0
+
         # Clear background canvas
         self._screen.fill(self.COLOR_BG)
 
@@ -548,15 +645,9 @@ class ArenaVisualizer:
         self._draw_arena_grid(self._screen)
         self._draw_arena_boundaries(self._screen)
         self._draw_corner_markers(self._screen)
+        self._draw_trail(self._screen)
 
-        # Draw vehicle (defaults to middle of the arena)
-        if vehicle_pose is not None:
-            vx, vy, vyaw = vehicle_pose
-        else:
-            vx = self.arena_width_m / 2.0
-            vy = self.arena_height_m / 2.0
-            vyaw = 0.0
-
+        # Draw vehicle
         self.draw_vehicle(
             self._screen,
             vx,
@@ -564,6 +655,10 @@ class ArenaVisualizer:
             yaw=vyaw,
             steering_angle=steering_angle,
         )
+
+        # Draw Picture-in-Picture camera feed if enabled
+        if self.show_camera_pip and camera_overlay is not None:
+            self._draw_camera_pip(self._screen, camera_overlay)
 
         if self.render_mode == "human":
             pygame.display.flip()
