@@ -38,6 +38,7 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from config.settings import DEFAULT_SETTINGS, VehicleDynamicsConfig  # noqa: E402
+from controllers.pid_controller import PIDController  # noqa: E402
 from controllers.stanley_controller import StanleyController  # noqa: E402
 from simulation.arena_visualizer import ArenaVisualizer  # noqa: E402
 from simulation.bicycle_model import KinematicBicycleModel  # noqa: E402
@@ -122,13 +123,27 @@ class InteractiveSimulator:
         else:
             self.model = self.dynamic_model
 
-        # Autopilot (Stanley) controller
+        # Autonomous tracking controllers
         self.stanley_controller = StanleyController(
             waypoints=self.waypoints,
             dt=self.dt,
             target_velocity=0.60,
         )
-        self.autopilot: bool = (controller.strip().lower() == "stanley")
+        self.pid_controller = PIDController(
+            waypoints=self.waypoints,
+            dt=self.dt,
+            target_velocity=0.55,
+        )
+        ctrl_mode = controller.strip().lower()
+        if ctrl_mode == "pid":
+            self.active_controller = "pid"
+            self.autopilot = True
+        elif ctrl_mode == "stanley":
+            self.active_controller = "stanley"
+            self.autopilot = True
+        else:
+            self.active_controller = "stanley"
+            self.autopilot = False
 
         # Visualizer interface with track waypoints overlay
         self.visualizer = ArenaVisualizer(
@@ -168,7 +183,8 @@ class InteractiveSimulator:
         print("  [R]            : Reset to Arena Center")
         print("  [C]            : Clear Breadcrumb Trail")
         print("  [1] / [2] / [3]: Select Speed Profile (Crawl / Normal / Sport)")
-        print("  [P]            : Toggle Autopilot (Stanley Controller)")
+        print("  [P]            : Toggle Autopilot ON/OFF")
+        print("  [O]            : Switch Autopilot Controller (Stanley <-> PID)")
         print("  [H]            : Print Controls Help")
         print("  [ESC] / [Q]    : Quit Simulator")
         print("=" * 65 + "\n")
@@ -193,7 +209,16 @@ class InteractiveSimulator:
         elif key == pygame.K_p:
             self.autopilot = not self.autopilot
             status_desc = "ENABLED" if self.autopilot else "DISABLED"
-            print(f"\n>> Autopilot (Stanley Controller): {status_desc}")
+            ctrl_name = self.active_controller.upper()
+            print(f"\n>> Autopilot [{ctrl_name}]: {status_desc}")
+        elif key == pygame.K_o:
+            self.active_controller = (
+                "pid" if self.active_controller == "stanley" else "stanley"
+            )
+            print(
+                f"\n>> Switched Autopilot Controller to: "
+                f"{self.active_controller.upper()}"
+            )
         elif key == pygame.K_r:
             self.reset()
             print(">> Vehicle reset to center.")
@@ -303,14 +328,19 @@ class InteractiveSimulator:
 
         try:
             while self.visualizer.is_open:
-                # 1. Capture driving inputs (manual keyboard or Stanley autopilot)
+                # 1. Capture driving inputs (manual keyboard or autonomous autopilot)
                 manual_steer, manual_throttle = self._handle_continuous_input()
                 if (
                     self.autopilot
                     and abs(manual_steer) < 1e-3
                     and abs(manual_throttle) < 1e-3
                 ):
-                    act = self.stanley_controller.compute_action(
+                    active_agent = (
+                        self.pid_controller
+                        if self.active_controller == "pid"
+                        else self.stanley_controller
+                    )
+                    act = active_agent.compute_action(
                         state=self.model.get_state(),
                         reference=self.waypoints,
                     )
@@ -363,7 +393,8 @@ class InteractiveSimulator:
                         cte, _, _ = TrackGenerator.compute_tracking_errors(
                             self.waypoints, state.x, state.y, state.yaw
                         )
-                        pilot_tag = f"[AUTOPILOT: STANLEY | CTE: {cte:+.3f}m]"
+                        ctrl_tag = self.active_controller.upper()
+                        pilot_tag = f"[AUTOPILOT: {ctrl_tag} | CTE: {cte:+.3f}m]"
                     else:
                         pilot_tag = f"[{mode_name}]"
 
@@ -454,9 +485,9 @@ def main() -> None:
     parser.add_argument(
         "--controller",
         type=str,
-        choices=["manual", "stanley"],
+        choices=["manual", "stanley", "pid"],
         default="manual",
-        help="Initial driving control mode: 'manual' (default) or 'stanley'.",
+        help="Initial driving control mode: 'manual' (default), 'stanley', or 'pid'.",
     )
     parser.add_argument(
         "--no-walls",
