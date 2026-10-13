@@ -38,9 +38,11 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from config.settings import DEFAULT_SETTINGS, VehicleDynamicsConfig  # noqa: E402
+from controllers.stanley_controller import StanleyController  # noqa: E402
 from simulation.arena_visualizer import ArenaVisualizer  # noqa: E402
 from simulation.bicycle_model import KinematicBicycleModel  # noqa: E402
 from simulation.dynamic_bicycle_model import DynamicBicycleModel  # noqa: E402
+from simulation.track_generator import TrackGenerator  # noqa: E402
 from simulation.vehicle_state import VehicleState  # noqa: E402
 
 
@@ -60,6 +62,7 @@ class InteractiveSimulator:
         fps: int = 50,
         speed_mode: int = 2,
         model_type: str = "dynamic",
+        controller: str = "manual",
         initial_pose: Optional[Tuple[float, float, float]] = None,
         clamp_to_arena: bool = True,
     ) -> None:
@@ -71,13 +74,24 @@ class InteractiveSimulator:
         self.speed_mode = speed_mode
         self.clamp_to_arena = clamp_to_arena
 
-        # Initial pose defaults to arena center facing +X
+        # Reference trajectory waypoints (Oval track centered in arena)
+        cx = self.arena_width_m / 2.0
+        cy = self.arena_height_m / 2.0
+        self.waypoints = TrackGenerator.generate_oval(
+            length_m=self.arena_width_m * 0.70,
+            width_m=self.arena_height_m * 0.60,
+            center=(cx, cy),
+        )
+
+        # Initial pose defaults to track start aligned with path tangent
         if initial_pose is not None:
             init_x, init_y, init_yaw = initial_pose
         else:
-            init_x = self.arena_width_m / 2.0
-            init_y = self.arena_height_m / 2.0
-            init_yaw = 0.0
+            init_x = float(self.waypoints[0, 0])
+            init_y = float(self.waypoints[0, 1])
+            dx = float(self.waypoints[1, 0] - init_x)
+            dy = float(self.waypoints[1, 1] - init_y)
+            init_yaw = math.atan2(dy, dx)
 
         self.initial_state = VehicleState(
             x=init_x,
@@ -108,13 +122,22 @@ class InteractiveSimulator:
         else:
             self.model = self.dynamic_model
 
-        # Visualizer interface
+        # Autopilot (Stanley) controller
+        self.stanley_controller = StanleyController(
+            waypoints=self.waypoints,
+            dt=self.dt,
+            target_velocity=0.60,
+        )
+        self.autopilot: bool = (controller.strip().lower() == "stanley")
+
+        # Visualizer interface with track waypoints overlay
         self.visualizer = ArenaVisualizer(
             arena_width_m=self.arena_width_m,
             arena_height_m=self.arena_height_m,
             render_fps=self.fps,
             render_mode="human",
             window_title="RC Car Testbed | Interactive Simulator",
+            waypoints=self.waypoints,
         )
 
         # Collision & status tracking
@@ -145,6 +168,7 @@ class InteractiveSimulator:
         print("  [R]            : Reset to Arena Center")
         print("  [C]            : Clear Breadcrumb Trail")
         print("  [1] / [2] / [3]: Select Speed Profile (Crawl / Normal / Sport)")
+        print("  [P]            : Toggle Autopilot (Stanley Controller)")
         print("  [H]            : Print Controls Help")
         print("  [ESC] / [Q]    : Quit Simulator")
         print("=" * 65 + "\n")
@@ -166,6 +190,10 @@ class InteractiveSimulator:
         """Handles discrete single-press keyboard events."""
         if key == pygame.K_m:
             self.toggle_physics_model()
+        elif key == pygame.K_p:
+            self.autopilot = not self.autopilot
+            status_desc = "ENABLED" if self.autopilot else "DISABLED"
+            print(f"\n>> Autopilot (Stanley Controller): {status_desc}")
         elif key == pygame.K_r:
             self.reset()
             print(">> Vehicle reset to center.")
@@ -275,8 +303,23 @@ class InteractiveSimulator:
 
         try:
             while self.visualizer.is_open:
-                # 1. Capture continuous driving inputs
-                steer_target, throttle = self._handle_continuous_input()
+                # 1. Capture driving inputs (manual keyboard or Stanley autopilot)
+                manual_steer, manual_throttle = self._handle_continuous_input()
+                if (
+                    self.autopilot
+                    and abs(manual_steer) < 1e-3
+                    and abs(manual_throttle) < 1e-3
+                ):
+                    act = self.stanley_controller.compute_action(
+                        state=self.model.get_state(),
+                        reference=self.waypoints,
+                    )
+                    steer_target = float(act[0]) * self.params.max_steer_rad
+                    throttle_scale = self.SPEED_MODES[self.speed_mode][1]
+                    throttle = float(act[1]) * throttle_scale
+                else:
+                    steer_target = manual_steer
+                    throttle = manual_throttle
 
                 # 2. Advance vehicle physics step
                 self.model.step(
@@ -316,8 +359,16 @@ class InteractiveSimulator:
                     else:
                         physics_tag = f"[{model_label}]"
 
+                    if self.autopilot:
+                        cte, _, _ = TrackGenerator.compute_tracking_errors(
+                            self.waypoints, state.x, state.y, state.yaw
+                        )
+                        pilot_tag = f"[AUTOPILOT: STANLEY | CTE: {cte:+.3f}m]"
+                    else:
+                        pilot_tag = f"[{mode_name}]"
+
                     status = (
-                        f"{physics_tag} [{mode_name}] | "
+                        f"{physics_tag} {pilot_tag} | "
                         f"v: {state.velocity:+.2f} m/s | "
                         f"Steer: {steer_deg:+4.1f}° | "
                         f"Pos: ({state.x:.2f}, {state.y:.2f})m | "
@@ -401,6 +452,13 @@ def main() -> None:
         help="Initial speed mode: 1 (Crawl 35%%), 2 (Normal 60%%), 3 (Sport 100%%).",
     )
     parser.add_argument(
+        "--controller",
+        type=str,
+        choices=["manual", "stanley"],
+        default="manual",
+        help="Initial driving control mode: 'manual' (default) or 'stanley'.",
+    )
+    parser.add_argument(
         "--no-walls",
         action="store_true",
         help="Disable arena wall collision clamping.",
@@ -414,6 +472,7 @@ def main() -> None:
         fps=args.fps,
         speed_mode=args.mode,
         model_type=args.model,
+        controller=args.controller,
         clamp_to_arena=not args.no_walls,
     )
     sim.run()

@@ -57,6 +57,7 @@ class ArenaVisualizer:
     COLOR_VEHICLE_WHEEL = (15, 23, 42)  # Slate 900
     COLOR_VEHICLE_WHEEL_BORDER = (148, 163, 184)  # Slate 400
     COLOR_HEADING_LINE = (56, 189, 248)  # Sky 400
+    COLOR_TRACK_LINE = (71, 85, 105)  # Slate 600 (reference track path)
 
     def __init__(
         self,
@@ -65,11 +66,12 @@ class ArenaVisualizer:
         arena_height_m: Optional[float] = None,
         pixels_per_meter: float = 400.0,
         margin_px: int = 75,
-        top_bar_height_px: int = 40,
+        top_bar_height_px: int = 56,
         render_fps: int = 60,
         render_mode: str = "human",
         origin_bottom_left: bool = True,
         window_title: str = "Arena Visualizer",
+        waypoints: Optional[np.ndarray] = None,
     ) -> None:
         """Initializes geometry, screen scaling, and Pygame surface context."""
         cfg = arena_config or DEFAULT_SETTINGS.arena
@@ -115,6 +117,7 @@ class ArenaVisualizer:
         self.max_trail_len: int = 300
         self.status_text: str = ""
         self._last_vehicle_pose: Optional[Tuple[float, float, float]] = None
+        self.waypoints: Optional[np.ndarray] = waypoints
 
         self.is_open: bool = True
         self._screen: Optional[pygame.Surface] = None
@@ -237,7 +240,7 @@ class ArenaVisualizer:
         return self.is_open
 
     def _draw_top_header(self, surface: pygame.Surface) -> None:
-        """Draws top information header bar with title and metadata chips."""
+        """Draws top information header bar with title and telemetry on two rows."""
         header_rect = pygame.Rect(0, 0, self.window_width, self.top_bar_height_px)
         pygame.draw.rect(surface, self.COLOR_HEADER_BG, header_rect)
         pygame.draw.line(
@@ -248,36 +251,96 @@ class ArenaVisualizer:
             width=1,
         )
 
-        if self._font_medium:
-            title_surf = self._font_medium.render(
-                "AUTONOMOUS RC TESTBED (1:28) | ARENA SIMULATOR",
-                True,
-                self.COLOR_HEADER_TEXT,
-            )
-            surface.blit(title_surf, (15, 12))
+        if self.top_bar_height_px >= 48:
+            row1_centery = int(self.top_bar_height_px * 0.28)
+            row2_centery = int(self.top_bar_height_px * 0.74)
 
-        if self._font_small:
-            fps_val = self.fps
-            if self.status_text:
-                if "FPS" in self.status_text:
-                    meta_str = self.status_text
-                else:
-                    meta_str = f"[{self.status_text}] | FPS: {fps_val:.1f}"
-            else:
-                meta_str = (
+            # Subtle horizontal rule separating the two rows
+            pygame.draw.line(
+                surface,
+                self.COLOR_GRID_MINOR,
+                (15, self.top_bar_height_px // 2),
+                (self.window_width - 15, self.top_bar_height_px // 2),
+                width=1,
+            )
+
+            # --- Row 1: Header Title (left) & System Info (right) ---
+            if self._font_medium:
+                title_surf = self._font_medium.render(
+                    "AUTONOMOUS RC TESTBED (1:28) | ARENA SIMULATOR",
+                    True,
+                    self.COLOR_HEADER_TEXT,
+                )
+                t_rect = title_surf.get_rect()
+                t_rect.left = 15
+                t_rect.centery = row1_centery
+                surface.blit(title_surf, t_rect)
+
+            if self._font_small:
+                fps_val = self.fps
+                sys_str = (
                     f"Arena: {self.arena_width_m:.2f}m x {self.arena_height_m:.2f}m | "
                     f"Scale: {int(self.pixels_per_meter)}px/m | "
-                    f"Target FPS: {self.render_fps} ({fps_val:.1f} live)"
+                    f"FPS: {fps_val:.1f}"
                 )
-            meta_surf = self._font_small.render(meta_str, True, self.COLOR_TEXT)
-            meta_rect = meta_surf.get_rect()
-            meta_rect.right = self.window_width - 15
-            meta_rect.centery = self.top_bar_height_px // 2
-            surface.blit(meta_surf, meta_rect)
+                sys_surf = self._font_small.render(sys_str, True, self.COLOR_TEXT)
+                sys_rect = sys_surf.get_rect()
+                sys_rect.right = self.window_width - 15
+                sys_rect.centery = row1_centery
+                surface.blit(sys_surf, sys_rect)
+
+            # --- Row 2: Live Driving Telemetry & Controller Status ---
+            if self._font_small:
+                if self.status_text:
+                    telemetry_str = self.status_text
+                else:
+                    telemetry_str = (
+                        "Ready | [W/S] Throttle  [A/D] Steer  [P] Autopilot  "
+                        "[M] Model  [SPACE] Brake"
+                    )
+                status_surf = self._font_small.render(
+                    telemetry_str, True, self.COLOR_HEADING_LINE
+                )
+                status_rect = status_surf.get_rect()
+                status_rect.left = 15
+                status_rect.centery = row2_centery
+                surface.blit(status_surf, status_rect)
+        else:
+            # Single-row fallback when header height is constrained (< 48px)
+            if self._font_medium:
+                title_surf = self._font_medium.render(
+                    "AUTONOMOUS RC TESTBED", True, self.COLOR_HEADER_TEXT
+                )
+                t_rect = title_surf.get_rect()
+                t_rect.left = 15
+                t_rect.centery = self.top_bar_height_px // 2
+                surface.blit(title_surf, t_rect)
+
+            if self._font_small:
+                meta_str = self.status_text or f"FPS: {self.fps:.1f}"
+                meta_surf = self._font_small.render(meta_str, True, self.COLOR_TEXT)
+                meta_rect = meta_surf.get_rect()
+                meta_rect.right = self.window_width - 15
+                meta_rect.centery = self.top_bar_height_px // 2
+                surface.blit(meta_surf, meta_rect)
 
     def clear_trail(self) -> None:
         """Clears the breadcrumb trajectory history."""
         self.trail.clear()
+
+    def set_waypoints(self, waypoints: Optional[np.ndarray]) -> None:
+        """Sets or updates the reference trajectory path waypoints."""
+        self.waypoints = waypoints
+
+    def _draw_waypoints(self, surface: pygame.Surface) -> None:
+        """Renders reference trajectory path on the arena floor."""
+        if self.waypoints is None or len(self.waypoints) < 2:
+            return
+        pts = [
+            self.world_to_pixel(float(pt[0]), float(pt[1]))
+            for pt in self.waypoints
+        ]
+        pygame.draw.lines(surface, self.COLOR_TRACK_LINE, True, pts, width=2)
 
     def _draw_trail(self, surface: pygame.Surface) -> None:
         """Renders historical vehicle trajectory breadcrumb path."""
@@ -608,6 +671,7 @@ class ArenaVisualizer:
         self._draw_top_header(self._screen)
         self._draw_arena_grid(self._screen)
         self._draw_arena_boundaries(self._screen)
+        self._draw_waypoints(self._screen)
         self._draw_corner_markers(self._screen)
         self._draw_trail(self._screen)
 
