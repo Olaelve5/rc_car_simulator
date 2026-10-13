@@ -107,6 +107,8 @@ def test_local_module_imports() -> bool:
         ("vision.marker_tracker", "MarkerTracker"),
         ("comms.esp32_client", "ESP32Client"),
         ("simulation.bicycle_model", "KinematicBicycleModel"),
+        ("simulation.dynamic_bicycle_model", "DynamicBicycleModel"),
+        ("simulation.vehicle_state", "VehicleState"),
         ("simulation.arena_env", "ArenaEnv"),
         ("simulation.arena_visualizer", "ArenaVisualizer"),
         ("simulation.track_generator", "TrackGenerator"),

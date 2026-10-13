@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import sys
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 import warnings
 import numpy as np
 import pygame
@@ -207,8 +207,13 @@ class ArenaVisualizer:
             y = (py - self.arena_rect_top) / self.pixels_per_meter
         return float(x), float(y)
 
-    def handle_events(self) -> bool:
+    def handle_events(
+        self, key_callback: Optional[Callable[[int], None]] = None
+    ) -> bool:
         """Processes OS and Pygame window events (e.g. window close, ESC/Q keys).
+
+        Args:
+            key_callback: Optional callback receiving event.key on KEYDOWN.
 
         Returns:
             True if visualizer should continue running, False if exit requested.
@@ -224,6 +229,10 @@ class ArenaVisualizer:
                 if event.key in (pygame.K_ESCAPE, pygame.K_q):
                     self.is_open = False
                     return False
+                elif event.key == pygame.K_c:
+                    self.clear_trail()
+                if key_callback is not None:
+                    key_callback(event.key)
 
         return self.is_open
 
@@ -301,9 +310,10 @@ class ArenaVisualizer:
             px_top, py_top = self.world_to_pixel(x_m, self.arena_height_m)
             px_bot, py_bot = self.world_to_pixel(x_m, 0.0)
 
-            is_major = abs(x_m % grid_step_major) < 1e-4 or abs(
-                x_m % grid_step_major - grid_step_major
-            ) < 1e-4
+            is_major = (
+                abs(x_m % grid_step_major) < 1e-4
+                or abs(x_m % grid_step_major - grid_step_major) < 1e-4
+            )
             line_color = self.COLOR_GRID_MAJOR if is_major else self.COLOR_GRID_MINOR
             line_width = 1
 
@@ -328,9 +338,10 @@ class ArenaVisualizer:
             px_left, py_left = self.world_to_pixel(0.0, y_m)
             px_right, py_right = self.world_to_pixel(self.arena_width_m, y_m)
 
-            is_major = abs(y_m % grid_step_major) < 1e-4 or abs(
-                y_m % grid_step_major - grid_step_major
-            ) < 1e-4
+            is_major = (
+                abs(y_m % grid_step_major) < 1e-4
+                or abs(y_m % grid_step_major - grid_step_major) < 1e-4
+            )
             line_color = self.COLOR_GRID_MAJOR if is_major else self.COLOR_GRID_MINOR
             line_width = 1
 
@@ -385,9 +396,7 @@ class ArenaVisualizer:
 
             # Draw outer marker background and highlight border
             pygame.draw.rect(surface, (10, 10, 12), marker_rect)
-            pygame.draw.rect(
-                surface, self.COLOR_CORNER_MARKER, marker_rect, width=2
-            )
+            pygame.draw.rect(surface, self.COLOR_CORNER_MARKER, marker_rect, width=2)
 
             # Draw marker ID label
             if i < len(self.corner_marker_ids) and self._font_small:
@@ -463,9 +472,9 @@ class ArenaVisualizer:
         ]
 
         wheel_configs = [
-            (-half_wb, half_tr, 0.0),             # Rear-Left
-            (-half_wb, -half_tr, 0.0),            # Rear-Right
-            (half_wb, half_tr, steering_angle),   # Front-Left
+            (-half_wb, half_tr, 0.0),  # Rear-Left
+            (-half_wb, -half_tr, 0.0),  # Rear-Right
+            (half_wb, half_tr, steering_angle),  # Front-Left
             (half_wb, -half_tr, steering_angle),  # Front-Right
         ]
 
@@ -483,7 +492,7 @@ class ArenaVisualizer:
 
         # 2. Main Chassis Body
         hl_b = self.vehicle_length_m / 2.0  # 0.080m
-        hw_b = self.vehicle_width_m / 2.0   # 0.0375m
+        hw_b = self.vehicle_width_m / 2.0  # 0.0375m
         body_box = [
             (hl_b, hw_b),
             (-hl_b, hw_b),
@@ -549,6 +558,7 @@ class ArenaVisualizer:
         vehicle_pose: Optional[Tuple[float, float, float]] = None,
         steering_angle: float = 0.0,
         status_text: Optional[str] = None,
+        key_callback: Optional[Callable[[int], None]] = None,
     ) -> Optional[np.ndarray]:
         """Renders arena canvas, grid, boundaries, markers, trail, and vehicle.
 
@@ -557,6 +567,7 @@ class ArenaVisualizer:
                           Defaults to last known pose or center of the arena.
             steering_angle: Front wheel steer angle in radians.
             status_text: Optional telemetry / state string displayed in header.
+            key_callback: Optional callback receiving event.key on KEYDOWN.
 
         Returns:
             RGB numpy array of shape (H, W, 3) if render_mode is 'rgb_array',
@@ -566,7 +577,7 @@ class ArenaVisualizer:
             return None
 
         # Process window events in human mode
-        if not self.handle_events():
+        if not self.handle_events(key_callback=key_callback):
             return None
 
         if status_text is not None:
