@@ -53,7 +53,12 @@ testbed_core/
 │   └── marker_tracker.py    # ArUco detection and 2D vehicle pose estimation
 ├── comms/
 │   ├── __init__.py
-│   └── esp32_client.py      # UDP client streaming commands and receiving telemetry
+│   ├── esp32_client.py      # UDP client stub + ControlCommand / telemetry types
+│   ├── serial_transmitter.py# USB serial client for the ESP32-C3 RC transmitter
+│   └── teleop.py            # Gamepad/keyboard teleop of the real car
+├── firmware/
+│   └── rc_transmitter/
+│       └── rc_transmitter.ino # ESP32-C3 + nRF24L01 WLtoys (XK) transmitter
 ├── simulation/
 │   ├── __init__.py
 │   ├── bicycle_model.py     # Discrete 2D kinematic bicycle model state updates
@@ -130,6 +135,29 @@ python -m vision.track_vehicle --width 1.8 --height 1.2 --no-display
 
 Corner marker centers map to `0 -> (0, 0)`, `1 -> (W, 0)`, `2 -> (W, H)`, `3 -> (0, H)`; place them counter-clockwise seen from above. `W`/`H` are the measured distances between marker centers. Mount the car marker with its top edge facing the front of the car (yaw = 0 along +X). In the preview, press `l` to lock the homography and `q` to quit.
 
+### Test 4: Drive the Real Car (USB Transmitter)
+The car is driven through an ESP32-C3 + nRF24L01 that emulates the WLtoys XK radio protocol (`firmware/rc_transmitter`). Flash it from the Arduino IDE with `Tools -> USB CDC On Boot: Enabled`; wiring and the serial protocol are documented at the top of the sketch.
+
+```bash
+source .venv/bin/activate
+python -m comms.teleop --list                         # find the port
+python -m comms.teleop --axes                         # check gamepad axes
+python -m comms.teleop /dev/cu.usbmodem1101 --bind    # bind (power the car on), then drive
+python -m comms.teleop /dev/cu.usbmodem1101           # drive
+```
+
+Controls match the simulator: left stick steers, RT/LT forward/reverse, A stops, LB/RB change the speed profile. Close the Arduino Serial Monitor first. The firmware goes to neutral if no command arrives for 300 ms.
+
+From code, stream `ControlCommand`s at a steady rate (~50 Hz):
+
+```python
+from comms import ControlCommand, SerialTransmitter
+
+with SerialTransmitter("/dev/cu.usbmodem1101", max_throttle=0.6) as tx:
+    while running:
+        tx.send_command(ControlCommand(steering=s, throttle=t))  # both -1..1, +right / +forward
+```
+
 ---
 
 ## 5. Configuration & Safety Parameters
@@ -137,6 +165,7 @@ Corner marker centers map to `0 -> (0, 0)`, `1 -> (W, 0)`, `2 -> (W, H)`, `3 -> 
 All operational settings are centralized in `config/settings.py`:
 - **`CameraConfig`**: Device index (`camera_id`), resolution (`1280x720`), FPS target (`30`).
 - **`NetworkConfig`**: ESP32 destination IP (`192.168.1.100`), UDP control port (`8888`), control loop frequency (`50 Hz`).
+- **`TransmitterConfig`**: Serial port, send rate (`50 Hz`), throttle cap (`0.60`) and steering inversion for the USB RC transmitter.
 - **`SafetyConfig`**: Throttle cap limit (`max_throttle_pct = 0.50`), crawling speed limit (`0.30 m/s`), and watchdog timeout (`0.25 s`).
 - **`ArenaConfig`**: Metric dimensions (`2.0m x 1.5m`), ArUco dictionary (`DICT_4X4_50`), and marker IDs.
 

@@ -14,6 +14,7 @@ simple-pid>=2.0.0
 
 # Human-Machine Interface & Input
 pygame>=2.5.0
+pyserial>=3.5
 
 # Code Quality & Development Tooling
 black>=24.1.0

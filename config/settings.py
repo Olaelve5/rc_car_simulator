@@ -35,6 +35,17 @@ class NetworkConfig:
 
 
 @dataclass
+class TransmitterConfig:
+    """USB serial link to the ESP32-C3 + nRF24L01 RC transmitter."""
+
+    port: str = ""  # e.g. /dev/cu.usbmodem1101; empty = pass on the command line
+    baud: int = 115200  # Ignored on native USB CDC, kept for consistency
+    send_rate_hz: float = 50.0  # Must be well above 1 / firmware failsafe (300 ms)
+    max_throttle: float = 0.60  # Throttle cap for indoor testing (1.0 = full)
+    invert_steering: bool = True  # Firmware +STEER turns the 284131 left
+
+
+@dataclass
 class SafetyConfig:
     """Hardware safety boundaries and constraints for 1:28 RC vehicle."""
 
@@ -107,6 +118,7 @@ class TestbedSettings:
 
     camera: CameraConfig = field(default_factory=CameraConfig)
     network: NetworkConfig = field(default_factory=NetworkConfig)
+    transmitter: TransmitterConfig = field(default_factory=TransmitterConfig)
     safety: SafetyConfig = field(default_factory=SafetyConfig)
     arena: ArenaConfig = field(default_factory=ArenaConfig)
     vehicle: VehicleDynamicsConfig = field(default_factory=VehicleDynamicsConfig)
