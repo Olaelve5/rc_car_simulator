@@ -30,6 +30,7 @@ from pathlib import Path
 import sys
 import time
 from typing import Optional, Tuple, Union
+import numpy as np
 import pygame
 
 # Ensure project root is discoverable on sys.path
@@ -37,14 +38,15 @@ project_root = Path(__file__).resolve().parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from config.settings import DEFAULT_SETTINGS, VehicleDynamicsConfig  # noqa: E402
-from controllers.pid_controller import PIDController  # noqa: E402
-from controllers.stanley_controller import StanleyController  # noqa: E402
-from simulation.arena_visualizer import ArenaVisualizer  # noqa: E402
-from simulation.bicycle_model import KinematicBicycleModel  # noqa: E402
-from simulation.dynamic_bicycle_model import DynamicBicycleModel  # noqa: E402
-from simulation.track_generator import TrackGenerator  # noqa: E402
-from simulation.vehicle_state import VehicleState  # noqa: E402
+from config.settings import DEFAULT_SETTINGS, VehicleDynamicsConfig  
+from controllers.input_manager import InputManager  
+from controllers.pid_controller import PIDController  
+from controllers.stanley_controller import StanleyController  
+from simulation.arena_visualizer import ArenaVisualizer  
+from simulation.bicycle_model import KinematicBicycleModel  
+from simulation.dynamic_bicycle_model import DynamicBicycleModel  
+from simulation.track_generator import TrackGenerator  
+from simulation.vehicle_state import VehicleState  
 
 
 class InteractiveSimulator:
@@ -64,6 +66,7 @@ class InteractiveSimulator:
         speed_mode: int = 2,
         model_type: str = "dynamic",
         controller: str = "manual",
+        track_type: str = "oval",
         initial_pose: Optional[Tuple[float, float, float]] = None,
         clamp_to_arena: bool = True,
     ) -> None:
@@ -74,15 +77,10 @@ class InteractiveSimulator:
         self.dt = 1.0 / self.fps
         self.speed_mode = speed_mode
         self.clamp_to_arena = clamp_to_arena
+        self.track_type = track_type.strip().lower()
 
-        # Reference trajectory waypoints (Oval track centered in arena)
-        cx = self.arena_width_m / 2.0
-        cy = self.arena_height_m / 2.0
-        self.waypoints = TrackGenerator.generate_oval(
-            length_m=self.arena_width_m * 0.70,
-            width_m=self.arena_height_m * 0.60,
-            center=(cx, cy),
-        )
+        # Reference trajectory waypoints
+        self.waypoints = self._create_track(self.track_type)
 
         # Initial pose defaults to track start aligned with path tangent
         if initial_pose is not None:
@@ -134,9 +132,13 @@ class InteractiveSimulator:
             dt=self.dt,
             target_velocity=0.55,
         )
+        
         ctrl_mode = controller.strip().lower()
         if ctrl_mode == "pid":
             self.active_controller = "pid"
+            self.autopilot = True
+        elif ctrl_mode == "simple_pid":
+            self.active_controller = "simple_pid"
             self.autopilot = True
         elif ctrl_mode == "stanley":
             self.active_controller = "stanley"
@@ -144,6 +146,12 @@ class InteractiveSimulator:
         else:
             self.active_controller = "stanley"
             self.autopilot = False
+
+        # Human-machine interface input manager (Xbox Controller + Keyboard)
+        self.input_manager = InputManager(
+            max_steer_rad=self.params.max_steer_rad,
+            initial_speed_mode=self.speed_mode,
+        )
 
         # Visualizer interface with track waypoints overlay
         self.visualizer = ArenaVisualizer(
@@ -159,6 +167,48 @@ class InteractiveSimulator:
         self._collision_alert_timer: float = 0.0
         self._last_print_time: float = 0.0
 
+    def _create_track(self, track_type: str) -> np.ndarray:
+        """Generates reference track waypoints via TrackGenerator."""
+        cx = self.arena_width_m / 2.0
+        cy = self.arena_height_m / 2.0
+        kind = track_type.strip().lower()
+
+        if kind == "circle":
+            radius = min(self.arena_width_m, self.arena_height_m) * 0.35
+            return TrackGenerator.generate_circle(radius_m=radius, center=(cx, cy))
+        elif kind == "figure_eight":
+            return TrackGenerator.generate_figure_eight(
+                length_m=self.arena_width_m * 0.70,
+                width_m=self.arena_height_m * 0.60,
+                center=(cx, cy),
+            )
+        else:
+            return TrackGenerator.generate_oval(
+                length_m=self.arena_width_m * 0.70,
+                width_m=self.arena_height_m * 0.60,
+                center=(cx, cy),
+            )
+
+    def switch_track(self, track_type: Optional[str] = None) -> None:
+        """Switches or cycles through track layouts (Oval -> Circle -> Figure-8)."""
+        track_sequence = ["oval", "circle", "figure_eight"]
+        if track_type is not None:
+            self.track_type = track_type.strip().lower()
+        else:
+            curr_idx = (
+                track_sequence.index(self.track_type)
+                if self.track_type in track_sequence
+                else 0
+            )
+            self.track_type = track_sequence[(curr_idx + 1) % len(track_sequence)]
+
+        self.waypoints = self._create_track(self.track_type)
+        self.visualizer.set_waypoints(self.waypoints)
+        self.stanley_controller.set_waypoints(self.waypoints)
+        self.pid_controller.set_waypoints(self.waypoints)
+        self.simple_pid_controller.set_waypoints(self.waypoints)
+        print(f"\n>> Switched track layout to: {self.track_type.upper()}")
+
     def print_banner(self) -> None:
         """Prints user keybindings and configuration summary to terminal."""
         print("\n" + "=" * 65)
@@ -170,8 +220,28 @@ class InteractiveSimulator:
         )
         print(f"Simulation Rate  : {self.fps} Hz (dt = {self.dt*1000:.1f}ms)")
         print(f"Active Physics   : {self.model.model_name.upper()} Model")
+        print(f"Active Track     : {self.track_type.upper()}")
         mode_desc = self.SPEED_MODES[self.speed_mode][0]
         print(f"Speed Profile    : Mode {self.speed_mode} - {mode_desc}")
+        ctrl_status = (
+            f"🎮 {self.input_manager.device_name}"
+            if self.input_manager.is_gamepad_connected
+            else "⌨️ Keyboard (No Gamepad Detected)"
+        )
+        print(f"Input Device     : {ctrl_status}")
+        print("-" * 65)
+        print("XBOX CONTROLLER (BLUETOOTH / USB):")
+        print("  [Left Stick X] : Proportional Steering (Analog with deadzone & curve)")
+        print("  [RT]           : Forward Throttle (Proportional)")
+        print("  [LT]           : Brake / Reverse (Proportional)")
+        print("  [Left Stick Y] : Dual Throttle / Reverse (Stick alternative)")
+        print("  [A Button]     : Emergency Handbrake Stop")
+        print("  [B Button]     : Reset Vehicle to Center")
+        print("  [X Button]     : Clear Breadcrumb Trail")
+        print("  [Y Button]     : Toggle Autopilot ON/OFF")
+        print("  [LB] / [RB]    : Step Speed Profile (Crawl / Normal / Sport)")
+        print("  [D-Pad Left/Rt]: Cycle Track Layout (Oval -> Circle -> Fig-8)")
+        print("  [D-Pad Up/Down]: Cycle Autopilot Controller (Stanley / PID)")
         print("-" * 65)
         print("KEYBOARD CONTROLS:")
         print("  [W] / [UP]     : Forward Throttle")
@@ -180,11 +250,12 @@ class InteractiveSimulator:
         print("  [D] / [RIGHT]  : Steer Right")
         print("  [SPACE]        : Emergency Handbrake")
         print("  [M]            : Toggle Physics Model (Dynamic / Kinematic)")
+        print("  [T]            : Cycle Track Layout (Oval -> Circle -> Figure-8)")
         print("  [R]            : Reset to Arena Center")
         print("  [C]            : Clear Breadcrumb Trail")
         print("  [1] / [2] / [3]: Select Speed Profile (Crawl / Normal / Sport)")
         print("  [P]            : Toggle Autopilot ON/OFF")
-        print("  [O]            : Switch Autopilot Controller (Stanley <-> PID)")
+        print("  [O]            : Cycle Autopilot (Stanley -> PID -> Simple-PID)")
         print("  [H]            : Print Controls Help")
         print("  [ESC] / [Q]    : Quit Simulator")
         print("=" * 65 + "\n")
@@ -202,23 +273,54 @@ class InteractiveSimulator:
         self.model.reset(curr_state)
         print(f"\n>> Switched physics engine to: {mode_note}")
 
+    def cycle_controller(self) -> None:
+        """Cycles autopilot controllers (Stanley / PID / Simple-PID)."""
+        ctrl_cycle = ["stanley", "pid", "simple_pid"]
+        curr_i = (
+            ctrl_cycle.index(self.active_controller)
+            if self.active_controller in ctrl_cycle
+            else 0
+        )
+        self.active_controller = ctrl_cycle[(curr_i + 1) % len(ctrl_cycle)]
+        print(
+            f"\n>> Switched Autopilot Controller to: "
+            f"{self.active_controller.upper()}"
+        )
+
+    def _on_event(self, event: pygame.event.Event) -> None:
+        """Handles Pygame discrete events, delegating to InputManager."""
+        action = self.input_manager.handle_event(event)
+        if action == "reset":
+            self.reset()
+            print(">> Vehicle reset to center (Gamepad B).")
+        elif action == "clear_trail":
+            self.visualizer.clear_trail()
+            print(">> Breadcrumb trail cleared (Gamepad X).")
+        elif action == "toggle_autopilot":
+            self.autopilot = not self.autopilot
+            status_desc = "ENABLED" if self.autopilot else "DISABLED"
+            ctrl_name = self.active_controller.upper()
+            print(f"\n>> Autopilot [{ctrl_name}]: {status_desc} (Gamepad Y)")
+        elif action == "cycle_track":
+            self.switch_track()
+        elif action == "cycle_controller":
+            self.cycle_controller()
+        elif action == "toggle_physics":
+            self.toggle_physics_model()
+
     def _on_key_down(self, key: int) -> None:
         """Handles discrete single-press keyboard events."""
         if key == pygame.K_m:
             self.toggle_physics_model()
+        elif key == pygame.K_t:
+            self.switch_track()
         elif key == pygame.K_p:
             self.autopilot = not self.autopilot
             status_desc = "ENABLED" if self.autopilot else "DISABLED"
             ctrl_name = self.active_controller.upper()
             print(f"\n>> Autopilot [{ctrl_name}]: {status_desc}")
         elif key == pygame.K_o:
-            self.active_controller = (
-                "pid" if self.active_controller == "stanley" else "stanley"
-            )
-            print(
-                f"\n>> Switched Autopilot Controller to: "
-                f"{self.active_controller.upper()}"
-            )
+            self.cycle_controller()
         elif key == pygame.K_r:
             self.reset()
             print(">> Vehicle reset to center.")
@@ -227,12 +329,15 @@ class InteractiveSimulator:
             print(">> Breadcrumb trail cleared.")
         elif key in (pygame.K_1, pygame.K_KP1):
             self.speed_mode = 1
+            self.input_manager.speed_mode = 1
             print(f">> Switched to Speed Mode 1: {self.SPEED_MODES[1][0]}")
         elif key in (pygame.K_2, pygame.K_KP2):
             self.speed_mode = 2
+            self.input_manager.speed_mode = 2
             print(f">> Switched to Speed Mode 2: {self.SPEED_MODES[2][0]}")
         elif key in (pygame.K_3, pygame.K_KP3):
             self.speed_mode = 3
+            self.input_manager.speed_mode = 3
             print(f">> Switched to Speed Mode 3: {self.SPEED_MODES[3][0]}")
         elif key == pygame.K_h:
             self.print_banner()
@@ -241,35 +346,19 @@ class InteractiveSimulator:
         """Resets the vehicle model to initial position and clears motion trail."""
         self.model.reset(self.initial_state)
         self.visualizer.clear_trail()
+        self.stanley_controller.reset()
+        self.pid_controller.reset()
+        self.simple_pid_controller.reset()
 
-    def _handle_continuous_input(self) -> Tuple[float, float]:
-        """Polls continuous keyboard states to compute steering and throttle demands.
+    def _handle_continuous_input(self) -> Tuple[float, float, bool]:
+        """Polls unified inputs from InputManager (Gamepad + Keyboard).
 
         Returns:
-            Tuple of (steering_target_rad, throttle_command).
+            Tuple of (steering_target_rad, throttle_command, brake_override).
         """
-        keys = pygame.key.get_pressed()
-
-        # 1. Steering target demand
-        steer_target = 0.0
-        if keys[pygame.K_a] or keys[pygame.K_LEFT]:
-            steer_target += self.params.max_steer_rad
-        if keys[pygame.K_d] or keys[pygame.K_RIGHT]:
-            steer_target -= self.params.max_steer_rad
-
-        # 2. Throttle command (scaled by selected speed profile)
-        throttle_scale = self.SPEED_MODES[self.speed_mode][1]
-        throttle = 0.0
-
-        if keys[pygame.K_SPACE]:
-            # Handbrake: zero throttle and strong active braking
-            throttle = -1.0
-        elif keys[pygame.K_w] or keys[pygame.K_UP]:
-            throttle = 1.0 * throttle_scale
-        elif keys[pygame.K_s] or keys[pygame.K_DOWN]:
-            throttle = -1.0 * throttle_scale
-
-        return steer_target, throttle
+        demand = self.input_manager.poll()
+        self.speed_mode = demand.speed_mode
+        return demand.steering_rad, demand.throttle, demand.brake
 
     def _handle_boundary_collisions(self, dt: float) -> bool:
         """Enforces arena perimeter wall constraints with physical bumper rebound.
@@ -328,18 +417,25 @@ class InteractiveSimulator:
 
         try:
             while self.visualizer.is_open:
-                # 1. Capture driving inputs (manual keyboard or autonomous autopilot)
-                manual_steer, manual_throttle = self._handle_continuous_input()
+                # 1. Capture driving inputs (manual or autonomous autopilot)
+                manual_steer, manual_throttle, manual_brake = (
+                    self._handle_continuous_input()
+                )
                 if (
                     self.autopilot
                     and abs(manual_steer) < 1e-3
                     and abs(manual_throttle) < 1e-3
+                    and not manual_brake
                 ):
-                    active_agent = (
-                        self.pid_controller
-                        if self.active_controller == "pid"
-                        else self.stanley_controller
-                    )
+                    active_agent: Union[
+                        PIDController, StanleyController
+                    ]
+                    if self.active_controller == "pid":
+                        active_agent = self.pid_controller
+                    elif self.active_controller == "simple_pid":
+                        active_agent = self.simple_pid_controller
+                    else:
+                        active_agent = self.stanley_controller
                     act = active_agent.compute_action(
                         state=self.model.get_state(),
                         reference=self.waypoints,
@@ -389,6 +485,12 @@ class InteractiveSimulator:
                     else:
                         physics_tag = f"[{model_label}]"
 
+                    dev_label = (
+                        "🎮 " + self.input_manager.device_name[:12]
+                        if self.input_manager.is_gamepad_connected
+                        else "⌨️ KEYS"
+                    )
+
                     if self.autopilot:
                         cte, _, _ = TrackGenerator.compute_tracking_errors(
                             self.waypoints, state.x, state.y, state.yaw
@@ -396,7 +498,7 @@ class InteractiveSimulator:
                         ctrl_tag = self.active_controller.upper()
                         pilot_tag = f"[AUTOPILOT: {ctrl_tag} | CTE: {cte:+.3f}m]"
                     else:
-                        pilot_tag = f"[{mode_name}]"
+                        pilot_tag = f"[{mode_name} | {dev_label}]"
 
                     status = (
                         f"{physics_tag} {pilot_tag} | "
@@ -406,12 +508,13 @@ class InteractiveSimulator:
                         f"Yaw: {yaw_deg:+5.1f}°"
                     )
 
-                # 5. Render to screen with discrete key handler
+                # 5. Render to screen with discrete key and event handlers
                 self.visualizer.render(
                     vehicle_pose=(state.x, state.y, state.yaw),
                     steering_angle=state.steering_angle,
                     status_text=status,
                     key_callback=self._on_key_down,
+                    event_callback=self._on_event,
                 )
 
                 # 6. Periodic terminal logging (every 1.5 seconds)
@@ -424,10 +527,16 @@ class InteractiveSimulator:
                         if isinstance(self.model, DynamicBicycleModel)
                         else ""
                     )
+                    input_label = (
+                        f"controller={self.input_manager.device_name}"
+                        if self.input_manager.is_gamepad_connected
+                        else "input=keyboard"
+                    )
                     print(
                         f"[{self.model.model_name[:3]}] v={state.velocity:+.2f}m/s | "
                         f"steer={steer_deg:+4.1f}°{drift_str} | "
                         f"pos=({state.x:.2f}m, {state.y:.2f}m) | "
+                        f"{input_label} | "
                         f"FPS={fps_live:.0f}"
                     )
 
@@ -485,9 +594,19 @@ def main() -> None:
     parser.add_argument(
         "--controller",
         type=str,
-        choices=["manual", "stanley", "pid"],
+        choices=["manual", "stanley", "pid", "simple_pid"],
         default="manual",
-        help="Initial driving control mode: 'manual' (default), 'stanley', or 'pid'.",
+        help=(
+            "Initial driving control mode: 'manual' (default), "
+            "'stanley', 'pid', or 'simple_pid'."
+        ),
+    )
+    parser.add_argument(
+        "--track",
+        type=str,
+        choices=["oval", "circle", "figure_eight"],
+        default="oval",
+        help="Reference track layout: 'oval' (default), 'circle', or 'figure_eight'.",
     )
     parser.add_argument(
         "--no-walls",
@@ -504,6 +623,7 @@ def main() -> None:
         speed_mode=args.mode,
         model_type=args.model,
         controller=args.controller,
+        track_type=args.track,
         clamp_to_arena=not args.no_walls,
     )
     sim.run()

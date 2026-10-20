@@ -211,12 +211,15 @@ class ArenaVisualizer:
         return float(x), float(y)
 
     def handle_events(
-        self, key_callback: Optional[Callable[[int], None]] = None
+        self,
+        key_callback: Optional[Callable[[int], None]] = None,
+        event_callback: Optional[Callable[[pygame.event.Event], None]] = None,
     ) -> bool:
         """Processes OS and Pygame window events (e.g. window close, ESC/Q keys).
 
         Args:
             key_callback: Optional callback receiving event.key on KEYDOWN.
+            event_callback: Optional callback receiving raw Pygame Event objects.
 
         Returns:
             True if visualizer should continue running, False if exit requested.
@@ -225,6 +228,9 @@ class ArenaVisualizer:
             return self.is_open
 
         for event in pygame.event.get():
+            if event_callback is not None:
+                event_callback(event)
+
             if event.type == pygame.QUIT:
                 self.is_open = False
                 return False
@@ -336,10 +342,7 @@ class ArenaVisualizer:
         """Renders reference trajectory path on the arena floor."""
         if self.waypoints is None or len(self.waypoints) < 2:
             return
-        pts = [
-            self.world_to_pixel(float(pt[0]), float(pt[1]))
-            for pt in self.waypoints
-        ]
+        pts = [self.world_to_pixel(float(pt[0]), float(pt[1])) for pt in self.waypoints]
         pygame.draw.lines(surface, self.COLOR_TRACK_LINE, True, pts, width=2)
 
     def _draw_trail(self, surface: pygame.Surface) -> None:
@@ -622,6 +625,7 @@ class ArenaVisualizer:
         steering_angle: float = 0.0,
         status_text: Optional[str] = None,
         key_callback: Optional[Callable[[int], None]] = None,
+        event_callback: Optional[Callable[[pygame.event.Event], None]] = None,
     ) -> Optional[np.ndarray]:
         """Renders arena canvas, grid, boundaries, markers, trail, and vehicle.
 
@@ -631,6 +635,7 @@ class ArenaVisualizer:
             steering_angle: Front wheel steer angle in radians.
             status_text: Optional telemetry / state string displayed in header.
             key_callback: Optional callback receiving event.key on KEYDOWN.
+            event_callback: Optional callback receiving raw Pygame Event objects.
 
         Returns:
             RGB numpy array of shape (H, W, 3) if render_mode is 'rgb_array',
@@ -640,7 +645,9 @@ class ArenaVisualizer:
             return None
 
         # Process window events in human mode
-        if not self.handle_events(key_callback=key_callback):
+        if not self.handle_events(
+            key_callback=key_callback, event_callback=event_callback
+        ):
             return None
 
         if status_text is not None:
