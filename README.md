@@ -1,6 +1,6 @@
 # Autonomous Cyber-Physical Testbed (1:28 Scale)
 
-A modular software architecture for an autonomous cyber-physical RC car testbed running on Apple macOS. The system integrates overhead computer vision perception (ArUco markers via UVC camera), wireless UDP telemetry with an onboard ESP32-C3 microcontroller, classical/RL control pipelines (PID, Stanley, Stable-Baselines3), and a Gymnasium simulation environment for rapid prototyping and sim-to-real transfer.
+A modular software architecture for an autonomous cyber-physical RC car testbed running on Apple macOS. The system integrates overhead computer vision perception (ArUco markers via UVC camera), an ESP32-C3 + nRF24L01 USB radio transmitter that drives the stock RC car, classical/RL control pipelines (PID, Stanley, Stable-Baselines3), and a Gymnasium simulation environment for rapid prototyping and sim-to-real transfer.
 
 ---
 
@@ -29,11 +29,16 @@ A modular software architecture for an autonomous cyber-physical RC car testbed 
                        (Steering & Throttle Commands)
                                      |
                                      v
-                          [comms.esp32_client]
-                                     | (UDP over Wi-Fi / 50 Hz)
+                       [comms.serial_transmitter]
+                                     | (USB serial / 50 Hz)
                                      v
                       +-----------------------------+
-                      |    1:28 RC Car (ESP32-C3)   |
+                      | ESP32-C3 + nRF24L01 (firmware)|
+                      +--------------+--------------+
+                                     | (2.4 GHz WLtoys XK protocol)
+                                     v
+                      +-----------------------------+
+                      |   1:28 RC Car (stock RX)    |
                       +-----------------------------+
 ```
 
@@ -53,7 +58,7 @@ testbed_core/
 │   └── marker_tracker.py    # ArUco detection and 2D vehicle pose estimation
 ├── comms/
 │   ├── __init__.py
-│   ├── esp32_client.py      # UDP client stub + ControlCommand / telemetry types
+│   ├── control_command.py   # ControlCommand: normalized steering/throttle/brake
 │   ├── serial_transmitter.py# USB serial client for the ESP32-C3 RC transmitter
 │   └── teleop.py            # Gamepad/keyboard teleop of the real car
 ├── firmware/
@@ -140,20 +145,21 @@ The car is driven through an ESP32-C3 + nRF24L01 that emulates the WLtoys XK rad
 
 ```bash
 source .venv/bin/activate
-python -m comms.teleop --list                         # find the port
-python -m comms.teleop --axes                         # check gamepad axes
-python -m comms.teleop /dev/cu.usbmodem1101 --bind    # bind (power the car on), then drive
-python -m comms.teleop /dev/cu.usbmodem1101           # drive
+python -m comms.teleop --axes      # check gamepad axes
+python -m comms.teleop --bind      # bind (power the car on), then drive
+python -m comms.teleop             # drive
+python -m comms.teleop --list      # list ports, if auto-detect fails
+python -m comms.teleop /dev/cu.usbmodem1101   # drive on a specific port
 ```
 
-Controls match the simulator: left stick steers, RT/LT forward/reverse, A stops, LB/RB change the speed profile. Close the Arduino Serial Monitor first. The firmware goes to neutral if no command arrives for 300 ms.
+Controls match the simulator: left stick steers, RT/LT forward/reverse, A stops, LB/RB change the speed profile. The transmitter port is found automatically by its USB ID. Close the Arduino Serial Monitor first. The firmware goes to neutral if no command arrives for 300 ms.
 
 From code, stream `ControlCommand`s at a steady rate (~50 Hz):
 
 ```python
-from comms import ControlCommand, SerialTransmitter
+from comms import ControlCommand, SerialTransmitter, find_transmitter_port
 
-with SerialTransmitter("/dev/cu.usbmodem1101", max_throttle=0.6) as tx:
+with SerialTransmitter(find_transmitter_port(), max_throttle=0.6) as tx:
     while running:
         tx.send_command(ControlCommand(steering=s, throttle=t))  # both -1..1, +right / +forward
 ```
@@ -164,8 +170,7 @@ with SerialTransmitter("/dev/cu.usbmodem1101", max_throttle=0.6) as tx:
 
 All operational settings are centralized in `config/settings.py`:
 - **`CameraConfig`**: Device index (`camera_id`), resolution (`1280x720`), FPS target (`30`).
-- **`NetworkConfig`**: ESP32 destination IP (`192.168.1.100`), UDP control port (`8888`), control loop frequency (`50 Hz`).
-- **`TransmitterConfig`**: Serial port, send rate (`50 Hz`), throttle cap (`0.60`) and steering inversion for the USB RC transmitter.
+- **`TransmitterConfig`**: Serial port (empty = auto-detect), send rate (`50 Hz`), throttle cap (`0.60`) and steering inversion for the USB RC transmitter.
 - **`SafetyConfig`**: Throttle cap limit (`max_throttle_pct = 0.50`), crawling speed limit (`0.30 m/s`), and watchdog timeout (`0.25 s`).
 - **`ArenaConfig`**: Metric dimensions (`2.0m x 1.5m`), ArUco dictionary (`DICT_4X4_50`), and marker IDs.
 

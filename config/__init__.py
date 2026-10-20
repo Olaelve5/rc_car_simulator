@@ -2,7 +2,6 @@
 
 from .settings import (
     CameraConfig,
-    NetworkConfig,
     TransmitterConfig,
     SafetyConfig,
     ArenaConfig,
@@ -12,7 +11,6 @@ from .settings import (
 
 __all__ = [
     "CameraConfig",
-    "NetworkConfig",
     "TransmitterConfig",
     "SafetyConfig",
     "ArenaConfig",

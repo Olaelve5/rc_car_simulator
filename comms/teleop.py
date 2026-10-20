@@ -10,8 +10,9 @@ Close the Arduino Serial Monitor first - only one program can hold the port.
 Usage:
     python -m comms.teleop --list                      # list serial ports
     python -m comms.teleop --axes                      # print raw gamepad axes
-    python -m comms.teleop /dev/cu.usbmodem1101        # drive
-    python -m comms.teleop /dev/cu.usbmodem1101 --bind # bind, then drive
+    python -m comms.teleop                             # drive (auto-detects port)
+    python -m comms.teleop --bind                      # bind, then drive
+    python -m comms.teleop /dev/cu.usbmodem1101        # drive on a given port
 """
 
 from __future__ import annotations
@@ -32,9 +33,10 @@ project_root = Path(__file__).resolve().parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from comms.esp32_client import ControlCommand  # noqa: E402
+from comms.control_command import ControlCommand  # noqa: E402
 from comms.serial_transmitter import (  # noqa: E402
     SerialTransmitter,
+    find_transmitter_port,
     list_serial_ports,
 )
 from config.settings import DEFAULT_SETTINGS  # noqa: E402
@@ -119,7 +121,9 @@ def drive_loop(tx: SerialTransmitter, inputs: InputManager, rate_hz: float) -> N
 def main() -> None:
     cfg = DEFAULT_SETTINGS.transmitter
     ap = argparse.ArgumentParser(description="Gamepad -> ESP32 transmitter -> car")
-    ap.add_argument("port", nargs="?", default=cfg.port, help="serial port")
+    ap.add_argument(
+        "port", nargs="?", default=cfg.port, help="serial port (default: auto-detect)"
+    )
     ap.add_argument("--list", action="store_true", help="list serial ports and exit")
     ap.add_argument("--axes", action="store_true", help="print gamepad axes and exit")
     ap.add_argument("--bind", action="store_true", help="bind before driving")
@@ -135,13 +139,20 @@ def main() -> None:
     if args.axes:
         show_axes()
         return
-    if not args.port:
-        ap.error("port is required (use --list to find it)")
+    port = args.port
+    if not port:
+        try:
+            port = find_transmitter_port()
+        except RuntimeError as err:
+            ap.error(str(err))
+        if not port:
+            ap.error("no ESP32-C3 transmitter found - plug it in or pass the port")
+        print(f"Using transmitter on {port}")
 
     pygame.init()
     inputs = InputManager(initial_speed_mode=args.mode)
     tx = SerialTransmitter(
-        args.port,
+        port,
         baud=cfg.baud,
         max_throttle=cfg.max_throttle,
         invert_steering=cfg.invert_steering,

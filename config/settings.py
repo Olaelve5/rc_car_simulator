@@ -1,7 +1,8 @@
 """Centralized configuration schemas and default parameters for the testbed.
 
 This module defines strongly-typed configuration dataclasses for vision,
-networking, vehicle safety boundaries, arena geometry, and vehicle physics.
+the RC transmitter link, vehicle safety boundaries, arena geometry, and
+vehicle physics.
 """
 
 from __future__ import annotations
@@ -24,21 +25,10 @@ class CameraConfig:
 
 
 @dataclass
-class NetworkConfig:
-    """Network configuration for UDP communication with onboard ESP32-C3."""
-
-    esp32_ip: str = "192.168.1.100"
-    udp_port: int = 8888
-    local_port: int = 8889
-    transmission_rate_hz: float = 50.0  # Control loop update rate
-    socket_timeout_s: float = 0.1
-
-
-@dataclass
 class TransmitterConfig:
     """USB serial link to the ESP32-C3 + nRF24L01 RC transmitter."""
 
-    port: str = ""  # e.g. /dev/cu.usbmodem1101; empty = pass on the command line
+    port: str = ""  # e.g. /dev/cu.usbmodem1101; empty = auto-detect
     baud: int = 115200  # Ignored on native USB CDC, kept for consistency
     send_rate_hz: float = 50.0  # Must be well above 1 / firmware failsafe (300 ms)
     max_throttle: float = 0.60  # Throttle cap for indoor testing (1.0 = full)
@@ -117,7 +107,6 @@ class TestbedSettings:
     """Master configuration container for the testbed system."""
 
     camera: CameraConfig = field(default_factory=CameraConfig)
-    network: NetworkConfig = field(default_factory=NetworkConfig)
     transmitter: TransmitterConfig = field(default_factory=TransmitterConfig)
     safety: SafetyConfig = field(default_factory=SafetyConfig)
     arena: ArenaConfig = field(default_factory=ArenaConfig)

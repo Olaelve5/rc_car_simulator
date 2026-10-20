@@ -16,19 +16,46 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import serial
 from serial.tools import list_ports
 
-from .esp32_client import ControlCommand
+from .control_command import ControlCommand
 
 WIRE_SCALE = 1000  # Firmware command range is -1000..1000
+
+# ESP32-C3 built-in USB Serial/JTAG (Espressif vendor ID)
+ESP32C3_USB_IDS = ((0x303A, 0x1001),)
 
 
 def list_serial_ports() -> List[Tuple[str, str]]:
     """Returns (device, description) for every serial port on the host."""
     return [(p.device, p.description) for p in list_ports.comports()]
+
+
+def find_transmitter_port() -> Optional[str]:
+    """Finds the ESP32-C3 transmitter by its USB vendor/product ID.
+
+    macOS names the port after the physical USB socket, so the device path
+    differs between ports and machines while the USB IDs stay the same.
+
+    Returns:
+        The device path if exactly one transmitter is connected, else None.
+
+    Raises:
+        RuntimeError: If more than one matching device is connected.
+    """
+    matches = [
+        p.device
+        for p in list_ports.comports()
+        if (p.vid, p.pid) in ESP32C3_USB_IDS and not p.device.startswith("/dev/tty.")
+    ]
+    if len(matches) > 1:
+        raise RuntimeError(
+            f"Several ESP32-C3 boards found ({', '.join(matches)}); pass the port."
+        )
+    return matches[0] if matches else None
 
 
 class SerialTransmitter:
