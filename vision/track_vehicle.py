@@ -23,59 +23,13 @@ from __future__ import annotations
 import argparse
 import math
 import time
-from typing import Iterator, Optional, Tuple, Union
+from typing import Iterator, Optional, Tuple
 import cv2
 import numpy as np
 
 from config.settings import DEFAULT_SETTINGS
-from .homography import HomographyTransformer
-from .marker_tracker import Detections, MarkerTracker, VehiclePose
-
-
-class ArenaTracker:
-    """Keeps the homography up to date from corner markers and tracks the car.
-
-    The homography is recomputed every frame where all four corner markers are
-    visible; if some are occluded (e.g. by the car), the last one is reused.
-    """
-
-    def __init__(
-        self,
-        arena_width_m: float,
-        arena_height_m: float,
-        corner_ids: Tuple[int, int, int, int],
-        vehicle_marker_id: int,
-        dictionary: Union[int, str],
-        flip_camera: bool = True,
-    ) -> None:
-        self.corner_ids = corner_ids
-        self.transformer = HomographyTransformer(arena_width_m, arena_height_m)
-        self.marker_tracker = MarkerTracker(
-            dictionary_id=dictionary, vehicle_marker_id=vehicle_marker_id
-        )
-        self.flip_camera = flip_camera
-        self.locked = False
-        self.visible_corners: Tuple[int, ...] = ()
-
-    def update(
-        self, frame: np.ndarray, timestamp: Optional[float] = None
-    ) -> Tuple[Optional[VehiclePose], Detections]:
-        """Processes one frame. Returns the car pose in meters (or None)."""
-        detections = self.marker_tracker.detect_markers(frame)
-        corners = self.marker_tracker.corner_markers_from_detections(
-            detections, self.corner_ids
-        )
-        self.visible_corners = tuple(corners)
-        if not self.locked and len(corners) == 4:
-            pixel_corners = np.array([corners[i] for i in self.corner_ids])
-            self.transformer.compute_matrix(pixel_corners)
-
-        if not self.transformer.is_calibrated:
-            return None, detections
-        pose = self.marker_tracker.vehicle_pose_from_detections(
-            detections, self.transformer, timestamp
-        )
-        return pose, detections
+from .arena_tracker import ArenaTracker
+from .marker_tracker import Detections, VehiclePose
 
 
 def open_source(source: str) -> cv2.VideoCapture:
@@ -181,13 +135,8 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    tracker = ArenaTracker(
-        arena_width_m=args.width,
-        arena_height_m=args.height,
-        corner_ids=arena.corner_marker_ids,
-        vehicle_marker_id=arena.vehicle_marker_id,
-        dictionary=arena.aruco_dict_name,
-        flip_camera=not args.no_flip,
+    tracker = ArenaTracker.from_config(
+        arena, not args.no_flip, args.width, args.height
     )
     cap = open_source(args.source)
     print_period = 1.0 / args.print_hz if args.print_hz > 0 else 0.0

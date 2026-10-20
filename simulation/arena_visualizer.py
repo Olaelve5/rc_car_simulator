@@ -59,6 +59,10 @@ class ArenaVisualizer:
     COLOR_HEADING_LINE = (56, 189, 248)  # Sky 400
     COLOR_TRACK_LINE = (71, 85, 105)  # Slate 600 (reference track path)
 
+    # Camera-tracked real vehicle
+    COLOR_TRACKED_BODY = (34, 197, 94)  # Green 500
+    COLOR_TRACKED_TRAIL = (134, 239, 172)  # Green 300
+
     def __init__(
         self,
         arena_config: Optional[ArenaConfig] = None,
@@ -114,6 +118,7 @@ class ArenaVisualizer:
         self.arena_rect_top = self.margin_px + self.top_bar_height_px
 
         self.trail: List[Tuple[int, int]] = []
+        self.tracked_trail: List[Tuple[int, int]] = []
         self.max_trail_len: int = 300
         self.status_text: str = ""
         self._last_vehicle_pose: Optional[Tuple[float, float, float]] = None
@@ -333,6 +338,23 @@ class ArenaVisualizer:
     def clear_trail(self) -> None:
         """Clears the breadcrumb trajectory history."""
         self.trail.clear()
+        self.tracked_trail.clear()
+
+    def _append_trail(self, trail: List[Tuple[int, int]], x: float, y: float) -> None:
+        """Adds a breadcrumb if the point moved at least 2 px, capping the length.
+
+        A jump of more than 0.25 m between frames (reset, snap, tracking glitch)
+        starts a new trail instead of drawing a line across the arena.
+        """
+        px, py = self.world_to_pixel(x, y)
+        if trail:
+            jump_px = abs(px - trail[-1][0]) + abs(py - trail[-1][1])
+            if jump_px > 0.25 * self.pixels_per_meter:
+                trail.clear()
+        if not trail or abs(px - trail[-1][0]) + abs(py - trail[-1][1]) >= 2:
+            trail.append((px, py))
+            if len(trail) > self.max_trail_len:
+                trail.pop(0)
 
     def set_waypoints(self, waypoints: Optional[np.ndarray]) -> None:
         """Sets or updates the reference trajectory path waypoints."""
@@ -346,10 +368,14 @@ class ArenaVisualizer:
         pygame.draw.lines(surface, self.COLOR_TRACK_LINE, True, pts, width=2)
 
     def _draw_trail(self, surface: pygame.Surface) -> None:
-        """Renders historical vehicle trajectory breadcrumb path."""
+        """Renders historical vehicle trajectory breadcrumb paths."""
         if len(self.trail) >= 2:
             pygame.draw.lines(
                 surface, self.COLOR_HEADING_LINE, False, self.trail, width=2
+            )
+        if len(self.tracked_trail) >= 2:
+            pygame.draw.lines(
+                surface, self.COLOR_TRACKED_TRAIL, False, self.tracked_trail, width=2
             )
 
     def _draw_arena_grid(self, surface: pygame.Surface) -> None:
@@ -626,6 +652,8 @@ class ArenaVisualizer:
         status_text: Optional[str] = None,
         key_callback: Optional[Callable[[int], None]] = None,
         event_callback: Optional[Callable[[pygame.event.Event], None]] = None,
+        tracked_pose: Optional[Tuple[float, float, float]] = None,
+        show_vehicle: bool = True,
     ) -> Optional[np.ndarray]:
         """Renders arena canvas, grid, boundaries, markers, trail, and vehicle.
 
@@ -633,6 +661,9 @@ class ArenaVisualizer:
             vehicle_pose: Optional (x, y, yaw) in meters and radians.
                           Defaults to last known pose or center of the arena.
             steering_angle: Front wheel steer angle in radians.
+            tracked_pose: Optional camera-tracked real car (x, y, yaw), drawn
+                          in green on top of the simulated car.
+            show_vehicle: If False, the simulated car is not drawn.
             status_text: Optional telemetry / state string displayed in header.
             key_callback: Optional callback receiving event.key on KEYDOWN.
             event_callback: Optional callback receiving raw Pygame Event objects.
@@ -657,13 +688,8 @@ class ArenaVisualizer:
         if vehicle_pose is not None:
             self._last_vehicle_pose = vehicle_pose
             vx, vy, vyaw = vehicle_pose
-            px, py = self.world_to_pixel(vx, vy)
-            if not self.trail or (
-                abs(px - self.trail[-1][0]) + abs(py - self.trail[-1][1]) >= 2
-            ):
-                self.trail.append((px, py))
-                if len(self.trail) > self.max_trail_len:
-                    self.trail.pop(0)
+            if show_vehicle:
+                self._append_trail(self.trail, vx, vy)
         elif self._last_vehicle_pose is not None:
             vx, vy, vyaw = self._last_vehicle_pose
         else:
@@ -682,14 +708,21 @@ class ArenaVisualizer:
         self._draw_corner_markers(self._screen)
         self._draw_trail(self._screen)
 
-        # Draw vehicle
-        self.draw_vehicle(
-            self._screen,
-            vx,
-            vy,
-            yaw=vyaw,
-            steering_angle=steering_angle,
-        )
+        # Draw vehicles
+        if show_vehicle:
+            self.draw_vehicle(
+                self._screen,
+                vx,
+                vy,
+                yaw=vyaw,
+                steering_angle=steering_angle,
+            )
+        if tracked_pose is not None:
+            tx, ty, tyaw = tracked_pose
+            self._append_trail(self.tracked_trail, tx, ty)
+            self.draw_vehicle(
+                self._screen, tx, ty, yaw=tyaw, body_color=self.COLOR_TRACKED_BODY
+            )
 
         if self.render_mode == "human":
             pygame.display.flip()
