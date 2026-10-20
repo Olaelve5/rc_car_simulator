@@ -55,6 +55,8 @@ testbed_core/
 │   ├── __init__.py
 │   ├── camera_stream.py     # Threaded UVC capture grabber using cv2.VideoCapture
 │   ├── homography.py        # 4-point perspective warp and metric arena mapping
+│   ├── arena_tracker.py     # ArenaTracker (per frame) + LiveTracker (threaded camera)
+│   ├── track_vehicle.py     # CLI: print/preview the tracked car pose
 │   └── marker_tracker.py    # ArUco detection and 2D vehicle pose estimation
 ├── comms/
 │   ├── __init__.py
@@ -162,6 +164,30 @@ from comms import ControlCommand, SerialTransmitter, find_transmitter_port
 with SerialTransmitter(find_transmitter_port(), max_throttle=0.6) as tx:
     while running:
         tx.send_command(ControlCommand(steering=s, throttle=t))  # both -1..1, +right / +forward
+```
+
+### Test 5: Real Car in the Simulator (Digital Twin)
+Tracks the real car with the overhead camera and draws it in **green** in the simulator, next to the simulated (blue) car:
+
+```bash
+source .venv/bin/activate
+python -m simulation.run_simulation --tracking                  # sim car + real car
+python -m simulation.run_simulation --tracking-only             # real car only
+python -m simulation.run_simulation --tracking --camera-preview # + annotated camera window
+python -m simulation.run_simulation --tracking --source run.mp4 # recorded video instead of camera
+```
+
+The header shows the tracking state (`CALIBRATING n/4 corners`, `SEARCHING CAR`, or the real car's speed). Press `F` to snap the simulated car onto the real car's pose and speed, and `L` to lock the homography once calibrated (useful when the car occludes a corner marker). Drive the real car at the same time with `python -m comms.teleop` in a second terminal.
+
+From code, `LiveTracker` gives the newest pose without blocking:
+
+```python
+from vision import LiveTracker
+
+with LiveTracker() as tracker:          # camera, arena and flip from config
+    car = tracker.latest()              # TrackedVehicle or None if not seen for 0.5 s
+    if car:
+        print(car.x, car.y, car.yaw, car.velocity)
 ```
 
 ---

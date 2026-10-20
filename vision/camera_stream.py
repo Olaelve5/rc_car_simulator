@@ -57,6 +57,7 @@ class CameraStream:
         self.frame_count: int = 0
         self.measured_fps: float = 0.0
         self._frame_times: Deque[float] = collections.deque(maxlen=30)
+        self._file_period: float = 0.0
 
         # Hardware reported properties
         self.actual_width: int = 0
@@ -121,6 +122,12 @@ class CameraStream:
             for _ in range(3):
                 self._cap.read()
 
+        # Video files are paced at their native frame rate, like a live camera.
+        self._file_period = 0.0
+        if not isinstance(self.source, int):
+            file_fps = float(self._cap.get(cv2.CAP_PROP_FPS))
+            self._file_period = 1.0 / file_fps if file_fps > 0 else 0.0
+
         self._running = True
         self._thread = threading.Thread(
             target=self._capture_loop,
@@ -176,7 +183,15 @@ class CameraStream:
 
     def _capture_loop(self) -> None:
         """Background worker thread continuously grabbing frames from hardware."""
+        next_t = time.perf_counter()
         while self._running and self._cap is not None:
+            if self._file_period:
+                next_t += self._file_period
+                delay = next_t - time.perf_counter()
+                if delay > 0:
+                    time.sleep(delay)
+                else:
+                    next_t = time.perf_counter()  # Fell behind; don't burst-read
             ret, frame = self._cap.read()
             if not ret or frame is None:
                 time.sleep(0.001)

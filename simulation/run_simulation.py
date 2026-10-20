@@ -14,12 +14,17 @@ Controls:
     C               : Clear breadcrumb motion trail
     1 / 2 / 3       : Switch speed profile (1: Crawl 35%, 2: Normal 60%, 3: Sport 100%)
     H               : Display controls help in terminal
+    F               : Snap simulated car to the tracked real car (--tracking)
+    L               : Lock / unlock the camera homography (--tracking)
     ESC / Q         : Exit simulator
 
 Usage:
     python -m simulation.run_simulation                    # Dynamic model (default)
     python -m simulation.run_simulation --model kinematic  # Kinematic model
     python -m simulation.run_simulation --mode 3 --fps 60
+    python -m simulation.run_simulation --tracking         # + real car from camera
+    python -m simulation.run_simulation --tracking-only    # real car only
+    python -m simulation.run_simulation --tracking --source run.mp4 --camera-preview
 """
 
 from __future__ import annotations
@@ -30,6 +35,7 @@ from pathlib import Path
 import sys
 import time
 from typing import Optional, Tuple, Union
+import cv2
 import numpy as np
 import pygame
 
@@ -47,6 +53,9 @@ from simulation.bicycle_model import KinematicBicycleModel
 from simulation.dynamic_bicycle_model import DynamicBicycleModel  
 from simulation.track_generator import TrackGenerator  
 from simulation.vehicle_state import VehicleState  
+from vision.arena_tracker import LiveTracker  # noqa: E402
+from vision.marker_tracker import VehiclePose  # noqa: E402
+from vision.track_vehicle import draw_overlay  # noqa: E402
 
 
 class InteractiveSimulator:
@@ -69,6 +78,9 @@ class InteractiveSimulator:
         track_type: str = "oval",
         initial_pose: Optional[Tuple[float, float, float]] = None,
         clamp_to_arena: bool = True,
+        tracker: Optional[LiveTracker] = None,
+        show_sim_vehicle: bool = True,
+        camera_preview: bool = False,
     ) -> None:
         """Initializes simulation handles, physics parameters, and visualizer window."""
         self.arena_width_m = float(arena_width_m)
@@ -78,6 +90,12 @@ class InteractiveSimulator:
         self.speed_mode = speed_mode
         self.clamp_to_arena = clamp_to_arena
         self.track_type = track_type.strip().lower()
+
+        # Camera tracking of the real car (digital twin overlay)
+        self.tracker = tracker
+        self.show_sim_vehicle = show_sim_vehicle
+        self.camera_preview = camera_preview and tracker is not None
+        self._preview_frame_id = -1
 
         # Reference trajectory waypoints
         self.waypoints = self._create_track(self.track_type)
@@ -257,6 +275,9 @@ class InteractiveSimulator:
         print("  [P]            : Toggle Autopilot ON/OFF")
         print("  [O]            : Cycle Autopilot (Stanley -> PID -> Simple-PID)")
         print("  [H]            : Print Controls Help")
+        if self.tracker is not None:
+            print("  [F]            : Snap Simulated Car to Real Car")
+            print("  [L]            : Lock / Unlock Camera Homography")
         print("  [ESC] / [Q]    : Quit Simulator")
         print("=" * 65 + "\n")
 
@@ -341,6 +362,45 @@ class InteractiveSimulator:
             print(f">> Switched to Speed Mode 3: {self.SPEED_MODES[3][0]}")
         elif key == pygame.K_h:
             self.print_banner()
+        elif key == pygame.K_f and self.tracker is not None:
+            self.snap_to_tracked()
+        elif key == pygame.K_l and self.tracker is not None:
+            locked = self.tracker.toggle_lock()
+            print(f">> Camera homography {'LOCKED' if locked else 'UNLOCKED'}")
+
+    def snap_to_tracked(self) -> None:
+        """Resets the simulated car to the tracked real car's pose and speed."""
+        real = self.tracker.latest() if self.tracker is not None else None
+        if real is None:
+            print(">> Cannot snap: real car is not being tracked.")
+            return
+        self.model.reset(
+            VehicleState(
+                x=real.x,
+                y=real.y,
+                yaw=real.yaw,
+                velocity=real.velocity,
+                v_x=real.velocity,
+            )
+        )
+        print(f">> Simulated car snapped to real car at ({real.x:.2f}, {real.y:.2f})m")
+
+    def _show_camera_preview(self) -> None:
+        """Shows the annotated camera frame in an OpenCV window when it changes."""
+        assert self.tracker is not None
+        frame_id, frame, detections = self.tracker.latest_frame()
+        if frame is None or frame_id == self._preview_frame_id:
+            return
+        self._preview_frame_id = frame_id
+        real = self.tracker.latest()
+        pose = (
+            VehiclePose(real.x, real.y, real.yaw, real.timestamp)
+            if real is not None
+            else None
+        )
+        overlay = draw_overlay(frame, self.tracker.tracker, pose, detections)
+        cv2.imshow("Overhead camera", overlay)
+        cv2.waitKey(1)
 
     def reset(self) -> None:
         """Resets the vehicle model to initial position and clears motion trail."""
@@ -508,16 +568,32 @@ class InteractiveSimulator:
                         f"Yaw: {yaw_deg:+5.1f}°"
                     )
 
-                # 5. Render to screen with discrete key and event handlers
+                # 5. Real car from the camera tracker, if enabled
+                real = self.tracker.latest() if self.tracker is not None else None
+                if self.tracker is not None:
+                    real_tag = (
+                        f"REAL v: {real.velocity:+.2f} m/s"
+                        if real is not None
+                        else f"REAL: {self.tracker.status}"
+                    )
+                    status = f"[{real_tag}] {status}"
+                    if self.camera_preview:
+                        self._show_camera_preview()
+
+                # 6. Render to screen with discrete key and event handlers
                 self.visualizer.render(
                     vehicle_pose=(state.x, state.y, state.yaw),
                     steering_angle=state.steering_angle,
                     status_text=status,
                     key_callback=self._on_key_down,
                     event_callback=self._on_event,
+                    tracked_pose=(
+                        (real.x, real.y, real.yaw) if real is not None else None
+                    ),
+                    show_vehicle=self.show_sim_vehicle,
                 )
 
-                # 6. Periodic terminal logging (every 1.5 seconds)
+                # 7. Periodic terminal logging (every 1.5 seconds)
                 now = time.monotonic()
                 if now - self._last_print_time >= 1.5:
                     self._last_print_time = now
@@ -532,6 +608,18 @@ class InteractiveSimulator:
                         if self.input_manager.is_gamepad_connected
                         else "input=keyboard"
                     )
+                    if self.tracker is not None:
+                        print(
+                            f"[real] {self.tracker.status} | "
+                            + (
+                                f"pos=({real.x:.2f}m, {real.y:.2f}m) | "
+                                f"yaw={math.degrees(real.yaw):+5.1f}° | "
+                                f"v={real.velocity:+.2f}m/s | "
+                                if real is not None
+                                else ""
+                            )
+                            + f"cam={self.tracker.camera.measured_fps:.0f}fps"
+                        )
                     print(
                         f"[{self.model.model_name[:3]}] v={state.velocity:+.2f}m/s | "
                         f"steer={steer_deg:+4.1f}°{drift_str} | "
@@ -545,6 +633,10 @@ class InteractiveSimulator:
         except KeyboardInterrupt:
             print("\nSimulation interrupted by user.")
         finally:
+            if self.tracker is not None:
+                self.tracker.stop()
+            if self.camera_preview:
+                cv2.destroyAllWindows()
             self.visualizer.close()
             print("Simulator closed cleanly.")
 
@@ -614,7 +706,46 @@ def main() -> None:
         help="Disable arena wall collision clamping.",
     )
 
+    parser.add_argument(
+        "--tracking",
+        action="store_true",
+        help="Track the real car with the overhead camera and draw it in green.",
+    )
+    parser.add_argument(
+        "--tracking-only",
+        action="store_true",
+        help="Like --tracking, but hide the simulated car.",
+    )
+    parser.add_argument(
+        "--source",
+        default=str(DEFAULT_SETTINGS.camera.camera_id),
+        help="Camera index or video file for --tracking (default: from config).",
+    )
+    parser.add_argument(
+        "--no-flip",
+        action="store_true",
+        help="Disable the 180-degree camera rotation for --tracking.",
+    )
+    parser.add_argument(
+        "--camera-preview",
+        action="store_true",
+        help="Also show the annotated camera feed in an OpenCV window.",
+    )
+
     args = parser.parse_args()
+
+    tracker: Optional[LiveTracker] = None
+    if args.tracking or args.tracking_only:
+        tracker = LiveTracker(
+            source=args.source,
+            flip_camera=False if args.no_flip else None,
+            arena_width_m=args.width,
+            arena_height_m=args.height,
+        )
+        try:
+            tracker.start()
+        except RuntimeError as err:
+            parser.exit(1, f"Camera tracking unavailable: {err}\n")
 
     sim = InteractiveSimulator(
         arena_width_m=args.width,
@@ -625,6 +756,9 @@ def main() -> None:
         controller=args.controller,
         track_type=args.track,
         clamp_to_arena=not args.no_walls,
+        tracker=tracker,
+        show_sim_vehicle=not args.tracking_only,
+        camera_preview=args.camera_preview,
     )
     sim.run()
 
